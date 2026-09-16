@@ -9,7 +9,7 @@ import { Field } from '../../components/Field/Field';
 import { Theme, Locale } from '../../shared/types';
 import { t } from '../../shared/i18n';
 import { CHANGELOG } from '../../shared/changelog';
-import { PaletteIcon, KeyboardIcon, InfoIcon } from '../../components/icons';
+import { PaletteIcon, KeyboardIcon, InfoIcon, FolderIcon } from '../../components/icons';
 
 export const SettingsModal: React.FC = () => {
   const { isSettingsOpen, setSettingsOpen } = useUiStore();
@@ -18,10 +18,12 @@ export const SettingsModal: React.FC = () => {
     locale,
     hwAcceleration,
     alwaysConfirmReplace,
+    defaultOutputDir,
     setTheme,
     setLocale,
     setHwAcceleration,
     setAlwaysConfirmReplace,
+    setDefaultOutputDir,
   } = useSettingsStore();
 
   const [activeTab, setActiveTab] = useState<'general' | 'shortcuts' | 'about'>('general');
@@ -47,6 +49,22 @@ export const SettingsModal: React.FC = () => {
     { value: 'amf', label: 'AMD AMF' },
     { value: 'cpu', label: 'Software CPU (Fallback)' },
   ];
+
+  const handleBrowseDefaultDir = async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: defaultOutputDir || undefined,
+      });
+      if (selected && typeof selected === 'string') {
+        setDefaultOutputDir(selected);
+      }
+    } catch (err) {
+      console.error('Failed to select directory:', err);
+    }
+  };
 
   return (
     <Modal
@@ -105,6 +123,38 @@ export const SettingsModal: React.FC = () => {
               />
             </Field>
 
+            {/* Default output directory */}
+            <Field label={t('settings.default_output_dir')}>
+              <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                <input
+                  type="text"
+                  readOnly
+                  placeholder="Original video folder"
+                  value={defaultOutputDir}
+                  style={{
+                    flex: 1,
+                    background: 'var(--bg-input)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--r-md)',
+                    color: 'var(--text-primary)',
+                    fontSize: 'var(--text-12)',
+                    padding: 'var(--space-2) var(--space-3)',
+                    outline: 'none',
+                    textOverflow: 'ellipsis',
+                  }}
+                />
+                <Button variant="secondary" onClick={handleBrowseDefaultDir}>
+                  <FolderIcon size={14} />
+                  <span>{t('export.browse')}</span>
+                </Button>
+                {defaultOutputDir && (
+                  <Button variant="secondary" onClick={() => setDefaultOutputDir('')}>
+                    <span>Reset</span>
+                  </Button>
+                )}
+              </div>
+            </Field>
+
             {/* Replace behavior */}
             <Field label={t('settings.replace_behavior')}>
               <label
@@ -141,16 +191,20 @@ export const SettingsModal: React.FC = () => {
             {[
               { key: 'Space', desc: 'Play / Pause' },
               { key: 'S', desc: 'Split clip at playhead' },
-              { key: 'I / O', desc: 'Set In / Out point' },
-              { key: 'Delete', desc: 'Remove clip' },
-              { key: 'E', desc: 'Enable / Disable clip' },
-              { key: 'R', desc: 'Rotate 90°' },
-              { key: 'Ctrl+Z', desc: 'Undo' },
-              { key: 'Ctrl+Shift+Z', desc: 'Redo' },
+              { key: 'Ctrl+Shift+S', desc: 'Replace current video' },
+              { key: 'Ctrl+E', desc: 'Export video' },
               { key: 'Ctrl+O', desc: 'Open files' },
-              { key: 'Ctrl+E', desc: 'Export' },
-              { key: 'F', desc: 'Fullscreen preview' },
-              { key: 'M', desc: 'Mute audio' },
+              { key: 'Ctrl+Z', desc: 'Undo' },
+              { key: 'Ctrl+Shift+Z / Ctrl+Y', desc: 'Redo' },
+              { key: 'Ctrl+,', desc: 'Settings' },
+              { key: 'J / K / L', desc: 'Reverse / Pause / Forward 10s' },
+              { key: 'Left / Right', desc: 'Step frame (-1 / +1)' },
+              { key: 'Shift+Left / Right', desc: 'Skip 1 second' },
+              { key: 'Home / End', desc: 'Seek to start / end' },
+              { key: 'N', desc: 'Toggle timeline snapping' },
+              { key: '+ / -', desc: 'Zoom timeline in / out' },
+              { key: 'F', desc: 'Toggle fullscreen preview' },
+              { key: 'M', desc: 'Toggle mute audio' },
             ].map((sc) => (
               <div
                 key={sc.key}
