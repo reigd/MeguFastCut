@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod export;
 pub mod ffmpeg;
 pub mod media;
 
@@ -15,7 +16,11 @@ pub fn run() {
             commands::check_needs_proxy,
             commands::generate_proxy,
             commands::get_clip_thumbnail,
-            commands::reveal_in_explorer
+            commands::reveal_in_explorer,
+            commands::start_export,
+            commands::cancel_export,
+            commands::open_file,
+            commands::open_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running Megu FastCut application");

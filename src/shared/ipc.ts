@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { ProbeResult } from './types';
+import { ExportJob } from '../features/export/export-types';
 
 export interface Capabilities {
   has_nvenc_h264: boolean;
@@ -102,3 +103,61 @@ export async function openVideoFileDialog(): Promise<string[] | null> {
     return null;
   }
 }
+
+export async function saveExportFileDialog(
+  defaultPath: string,
+  extension: string
+): Promise<string | null> {
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const selected = await save({
+      defaultPath,
+      filters: [
+        {
+          name: `${extension.toUpperCase()} file`,
+          extensions: [extension],
+        },
+        {
+          name: 'All files',
+          extensions: ['*'],
+        },
+      ],
+    });
+    return selected || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function startExport(job: ExportJob): Promise<void> {
+  try {
+    await invoke('start_export', { job });
+  } catch (err) {
+    throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  }
+}
+
+export async function cancelExport(): Promise<void> {
+  try {
+    await invoke('cancel_export');
+  } catch (err) {
+    console.error('Failed to cancel export:', err);
+  }
+}
+
+export async function openFile(path: string): Promise<void> {
+  try {
+    await invoke('open_file', { path });
+  } catch (err) {
+    console.error('Failed to open file:', err);
+  }
+}
+
+export async function openFolder(path: string): Promise<void> {
+  try {
+    await invoke('open_folder', { path });
+  } catch (err) {
+    console.error('Failed to open folder:', err);
+  }
+}
+

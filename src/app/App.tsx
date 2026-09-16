@@ -17,6 +17,10 @@ import { openVideoFileDialog } from '../shared/ipc';
 import { subscribeLocale, formatTimecode, t } from '../../src/shared/i18n';
 import { Button } from '../components/Button/Button';
 import { TrashIcon, FilmIcon, LightningIcon } from '../components/icons';
+import { ExportModal } from '../features/export/ExportModal';
+import { ExportProgressModal } from '../features/export/ExportProgressModal';
+import { ExportCompleteModal } from '../features/export/ExportCompleteModal';
+import { useExportStore } from '../stores/export';
 
 export const App: React.FC = () => {
   const [, setLocaleTick] = useState(0);
@@ -42,6 +46,7 @@ export const App: React.FC = () => {
     setFullscreen,
   } = usePlayerStore();
   const { setSettingsOpen } = useUiStore();
+  const { openExportModal } = useExportStore();
 
   // Re-render on locale changes
   useEffect(() => {
@@ -80,6 +85,11 @@ export const App: React.FC = () => {
         const paths = await openVideoFileDialog();
         if (paths && paths.length > 0) {
           await addFiles(paths);
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        if (project.clips.length > 0) {
+          openExportModal();
         }
       } else if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault();
@@ -171,6 +181,7 @@ export const App: React.FC = () => {
     toggleSnapping,
     zoomBy,
     totalDurationMs,
+    openExportModal,
   ]);
 
   const isWelcomeScreen = project.clips.length === 0;
@@ -293,7 +304,7 @@ export const App: React.FC = () => {
                   <span>{t('common.close')}</span>
                 </Button>
 
-                <Button variant="primary">
+                <Button variant="primary" onClick={openExportModal}>
                   <FilmIcon size={16} />
                   <span>{t('editor.export_btn')}</span>
                 </Button>
@@ -306,6 +317,9 @@ export const App: React.FC = () => {
       {/* Global Drawers & Modals */}
       <WhatsNewDrawer />
       <SettingsModal />
+      <ExportModal />
+      <ExportProgressModal />
+      <ExportCompleteModal />
       <ToastContainer />
     </div>
   );

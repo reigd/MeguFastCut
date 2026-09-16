@@ -58,3 +58,48 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
     .await
     .map_err(|e| format!("Task join error: {}", e))?
 }
+
+#[tauri::command]
+pub async fn start_export(app: tauri::AppHandle, job: crate::export::ExportJob) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || crate::export::runner::run_export(app, job))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn cancel_export() -> Result<(), String> {
+    tokio::task::spawn_blocking(crate::export::runner::cancel_export)
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn open_file(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(windows)]
+        {
+            let mut cmd = std::process::Command::new("explorer.exe");
+            cmd.arg(&path);
+            let _ = cmd.spawn();
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn open_folder(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(windows)]
+        {
+            let mut cmd = std::process::Command::new("explorer.exe");
+            cmd.arg(&path);
+            let _ = cmd.spawn();
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
