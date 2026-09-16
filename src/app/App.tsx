@@ -7,8 +7,10 @@ import { WelcomeScreen } from '../features/welcome/WelcomeScreen';
 import { VideoPlayer } from '../features/player/VideoPlayer';
 import { TransportControls } from '../features/player/TransportControls';
 import { ClipStrip } from '../features/clips/ClipStrip';
+import { Timeline } from '../features/timeline/Timeline';
 import { useProjectStore } from '../stores/project';
 import { usePlayerStore } from '../stores/player';
+import { useTimelineStore } from '../stores/timeline';
 import { useUiStore } from '../stores/ui';
 import { openVideoFileDialog } from '../shared/ipc';
 import { subscribeLocale, formatTimecode, t } from '../../src/shared/i18n';
@@ -17,7 +19,8 @@ import { PlusIcon, TrashIcon, FilmIcon, LightningIcon } from '../components/icon
 
 export const App: React.FC = () => {
   const [, setLocaleTick] = useState(0);
-  const { project, sources, addFiles, clearProject } = useProjectStore();
+  const { project, sources, activeClipId, addFiles, clearProject, splitClip } = useProjectStore();
+  const { toggleSnapping, zoomBy } = useTimelineStore();
   const {
     isFullscreen,
     togglePlay,
@@ -36,6 +39,11 @@ export const App: React.FC = () => {
       setLocaleTick((t) => t + 1);
     });
   }, []);
+
+  const totalDurationMs = project.clips.reduce(
+    (sum, c) => (c.enabled ? sum + (c.outMs - c.inMs) : sum),
+    0
+  );
 
   // Keyboard navigation & Shortcuts
   useEffect(() => {
@@ -93,6 +101,33 @@ export const App: React.FC = () => {
       } else if (e.key.toLowerCase() === 'm') {
         e.preventDefault();
         toggleMute();
+      } else if (e.key.toLowerCase() === 's' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        if (activeClipId) {
+          const currentMs = usePlayerStore.getState().currentTimeMs;
+          let accumulated = 0;
+          for (const c of project.clips) {
+            if (!c.enabled) continue;
+            const duration = c.outMs - c.inMs;
+            if (c.id === activeClipId) {
+              if (currentMs > accumulated && currentMs < accumulated + duration) {
+                const splitOffsetMs = currentMs - accumulated;
+                splitClip(activeClipId, c.inMs + splitOffsetMs);
+              }
+              break;
+            }
+            accumulated += duration;
+          }
+        }
+      } else if (e.key.toLowerCase() === 'n' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        toggleSnapping();
+      } else if (e.key === '=' || e.key === '+') {
+        e.preventDefault();
+        zoomBy(1.25, 400, 800, totalDurationMs);
+      } else if (e.key === '-' || e.key === '_') {
+        e.preventDefault();
+        zoomBy(0.8, 400, 800, totalDurationMs);
       }
     };
 
@@ -110,9 +145,13 @@ export const App: React.FC = () => {
     isFullscreen,
     setFullscreen,
     project.clips,
+    activeClipId,
+    splitClip,
+    toggleSnapping,
+    zoomBy,
+    totalDurationMs,
   ]);
 
-  const totalDurationMs = project.clips.reduce((sum, c) => sum + (c.outMs - c.inMs), 0);
   const isWelcomeScreen = project.clips.length === 0;
 
   return (
@@ -228,6 +267,9 @@ export const App: React.FC = () => {
 
           {/* Transport Controls Bar (44px) */}
           <TransportControls />
+
+          {/* Canvas-Based Timeline */}
+          {!isFullscreen && <Timeline />}
 
           {/* Clips Strip (72px + banner) */}
           {!isFullscreen && <ClipStrip />}

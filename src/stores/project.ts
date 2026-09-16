@@ -38,6 +38,7 @@ interface ProjectState {
   toggleClipEnabled: (clipId: string) => void;
   duplicateClip: (clipId: string) => void;
   splitClip: (clipId: string, splitTimeMs: number) => void;
+  trimClip: (clipId: string, inMs: number, outMs: number) => void;
   removeRecentFile: (path: string) => void;
   clearRecentFiles: () => void;
   setActiveClipId: (id: string | null) => void;
@@ -275,6 +276,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       project: { ...s.project, clips },
       activeClipId: secondClip.id,
     }));
+  },
+
+  trimClip: (clipId: string, inMs: number, outMs: number) => {
+    const clips = get().project.clips.map((c) => {
+      if (c.id !== clipId) return c;
+      const src = get().sources.find((s) => s.id === c.sourceId);
+      const maxDuration = src ? src.probe.durationMs : Math.max(outMs, c.outMs);
+      const clampedIn = Math.max(0, Math.min(inMs, outMs - 50));
+      const clampedOut = Math.min(maxDuration, Math.max(clampedIn + 50, outMs));
+      return {
+        ...c,
+        inMs: clampedIn,
+        outMs: clampedOut,
+      };
+    });
+    set((s) => ({ project: { ...s.project, clips } }));
   },
 
   removeRecentFile: (path: string) => {

@@ -523,3 +523,12 @@ export const LayersIcon: React.FC<IconProps> = (p) => (
     <polyline points="2 12 12 17 22 12" />
   </BaseIcon>
 );
+
+export const MagnetIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <path d="M4 7V4h4v3a4 4 0 0 0 8 0V4h4v3a8 8 0 0 1-16 0z" />
+    <line x1="4" y1="8" x2="8" y2="8" />
+    <line x1="16" y1="8" x2="20" y2="8" />
+  </BaseIcon>
+);
+

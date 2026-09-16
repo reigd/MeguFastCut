@@ -194,6 +194,14 @@
     "fixed": "Fixed",
     "removed": "Removed"
   },
+  "timeline": {
+    "fit": "Fit timeline",
+    "snap": "Snapping",
+    "zoom_in": "Zoom in",
+    "zoom_out": "Zoom out",
+    "split_at_playhead": "Split at playhead",
+    "no_clips": "No clips on timeline"
+  },
   "common": {
     "ok": "OK",
     "cancel": "Cancel",
