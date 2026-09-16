@@ -161,3 +161,27 @@ export async function openFolder(path: string): Promise<void> {
   }
 }
 
+export async function checkReplaceEligibility(originalPath: string): Promise<void> {
+  try {
+    await invoke('check_replace_eligibility', { originalPath });
+  } catch (err) {
+    throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  }
+}
+
+export async function generateReplaceTempPath(originalPath: string): Promise<string> {
+  try {
+    return await invoke<string>('generate_replace_temp_path', { originalPath });
+  } catch (err) {
+    throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  }
+}
+
+export async function finalizeReplace(tempPath: string, originalPath: string): Promise<ProbeResult> {
+  try {
+    return await invoke<ProbeResult>('finalize_replace', { tempPath, originalPath });
+  } catch (err) {
+    throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  }
+}
+

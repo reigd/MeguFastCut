@@ -20,7 +20,10 @@ pub fn run() {
             commands::start_export,
             commands::cancel_export,
             commands::open_file,
-            commands::open_folder
+            commands::open_folder,
+            commands::check_replace_eligibility,
+            commands::generate_replace_temp_path,
+            commands::finalize_replace
         ])
         .run(tauri::generate_context!())
         .expect("error while running Megu FastCut application");

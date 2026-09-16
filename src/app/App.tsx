@@ -16,10 +16,12 @@ import { useUiStore } from '../stores/ui';
 import { openVideoFileDialog } from '../shared/ipc';
 import { subscribeLocale, formatTimecode, t } from '../../src/shared/i18n';
 import { Button } from '../components/Button/Button';
-import { TrashIcon, FilmIcon, LightningIcon } from '../components/icons';
+import { Tooltip } from '../components/Tooltip/Tooltip';
+import { TrashIcon, FilmIcon, LightningIcon, ReplaceIcon } from '../components/icons';
 import { ExportModal } from '../features/export/ExportModal';
 import { ExportProgressModal } from '../features/export/ExportProgressModal';
 import { ExportCompleteModal } from '../features/export/ExportCompleteModal';
+import { ReplaceConfirmModal } from '../features/replace/ReplaceConfirmModal';
 import { useExportStore } from '../stores/export';
 
 export const App: React.FC = () => {
@@ -45,8 +47,19 @@ export const App: React.FC = () => {
     toggleMute,
     setFullscreen,
   } = usePlayerStore();
-  const { setSettingsOpen } = useUiStore();
+  const { setSettingsOpen, setReplaceConfirmOpen, addToast } = useUiStore();
   const { openExportModal } = useExportStore();
+
+  const handleReplaceClick = () => {
+    if (sources.length !== 1) {
+      addToast({
+        message: t('replace.err_single_source_only'),
+        durationMs: 4000,
+      });
+      return;
+    }
+    setReplaceConfirmOpen(true);
+  };
 
   // Re-render on locale changes
   useEffect(() => {
@@ -85,6 +98,11 @@ export const App: React.FC = () => {
         const paths = await openVideoFileDialog();
         if (paths && paths.length > 0) {
           await addFiles(paths);
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        if (project.clips.length > 0) {
+          handleReplaceClick();
         }
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') {
         e.preventDefault();
@@ -304,6 +322,19 @@ export const App: React.FC = () => {
                   <span>{t('common.close')}</span>
                 </Button>
 
+                <Tooltip
+                  content={sources.length !== 1 ? t('replace.err_single_source_only') : 'Ctrl+Shift+S'}
+                >
+                  <Button
+                    variant="secondary"
+                    disabled={sources.length !== 1 || project.clips.length === 0}
+                    onClick={handleReplaceClick}
+                  >
+                    <ReplaceIcon size={16} />
+                    <span>{t('editor.replace_btn')}</span>
+                  </Button>
+                </Tooltip>
+
                 <Button variant="primary" onClick={openExportModal}>
                   <FilmIcon size={16} />
                   <span>{t('editor.export_btn')}</span>
@@ -320,6 +351,7 @@ export const App: React.FC = () => {
       <ExportModal />
       <ExportProgressModal />
       <ExportCompleteModal />
+      <ReplaceConfirmModal />
       <ToastContainer />
     </div>
   );

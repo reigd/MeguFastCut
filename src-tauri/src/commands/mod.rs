@@ -2,6 +2,11 @@ use crate::ffmpeg::encoder_detect::{detect_capabilities, Capabilities};
 use crate::media::keyframes::extract_keyframes;
 use crate::media::probe::{probe_media_file, ProbeResult};
 use crate::media::proxy::{generate_proxy_file, needs_proxy};
+use crate::media::replace::{
+    check_replace_eligibility as check_replace_elig,
+    finalize_replace as final_replace,
+    generate_replace_temp_path as gen_replace_temp,
+};
 use crate::media::thumbnails::extract_thumbnail_base64;
 
 #[tauri::command]
@@ -101,5 +106,31 @@ pub async fn open_folder(path: String) -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn check_replace_eligibility(original_path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || check_replace_elig(&original_path))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn generate_replace_temp_path(original_path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        gen_replace_temp(&original_path).map(|p| p.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn finalize_replace(
+    temp_path: String,
+    original_path: String,
+) -> Result<ProbeResult, String> {
+    tokio::task::spawn_blocking(move || final_replace(&temp_path, &original_path))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
 }
 

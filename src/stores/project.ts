@@ -10,6 +10,7 @@ import {
   OutputSettings,
   AudioSettings,
   RotateAngle,
+  ProbeResult,
 } from '../shared/types';
 import { probeFile } from '../shared/ipc';
 import { useHistoryStore } from './history';
@@ -60,6 +61,7 @@ interface ProjectState {
   setOutput: (output: Partial<OutputSettings>) => void;
   setAudio: (audio: Partial<AudioSettings>) => void;
   setClipVolume: (clipId: string, volumeDb: number) => void;
+  updateSourceAfterReplace: (sourceId: string, newProbe: ProbeResult) => void;
 }
 
 const RECENTS_KEY = 'megu-fastcut-recent-files';
@@ -439,5 +441,26 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       c.id === clipId ? { ...c, volumeDb } : c
     );
     set((s) => ({ project: { ...s.project, clips } }));
+  },
+
+  updateSourceAfterReplace: (sourceId: string, newProbe: ProbeResult) => {
+    set((state) => {
+      const updatedSources = state.sources.map((s) =>
+        s.id === sourceId ? { ...s, probe: newProbe } : s
+      );
+      const updatedClips = state.project.clips.map((c) =>
+        c.sourceId === sourceId
+          ? { ...c, inMs: 0, outMs: newProbe.durationMs }
+          : c
+      );
+      return {
+        ...state,
+        sources: updatedSources,
+        project: {
+          ...state.project,
+          clips: updatedClips,
+        },
+      };
+    });
   },
 }));
