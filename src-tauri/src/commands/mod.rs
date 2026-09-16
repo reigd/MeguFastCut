@@ -2,6 +2,7 @@ use crate::ffmpeg::encoder_detect::{detect_capabilities, Capabilities};
 use crate::media::keyframes::extract_keyframes;
 use crate::media::probe::{probe_media_file, ProbeResult};
 use crate::media::proxy::{generate_proxy_file, needs_proxy};
+use crate::media::thumbnails::extract_thumbnail_base64;
 
 #[tauri::command]
 pub async fn probe_file(path: String) -> Result<ProbeResult, String> {
@@ -34,4 +35,26 @@ pub async fn generate_proxy(path: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || generate_proxy_file(&path))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn get_clip_thumbnail(path: String, time_ms: u64) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || extract_thumbnail_base64(&path, time_ms))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(windows)]
+        {
+            let mut cmd = std::process::Command::new("explorer.exe");
+            cmd.arg("/select,").arg(&path);
+            let _ = cmd.spawn();
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }

@@ -6,6 +6,7 @@ import { SettingsModal } from '../features/settings/SettingsModal';
 import { WelcomeScreen } from '../features/welcome/WelcomeScreen';
 import { VideoPlayer } from '../features/player/VideoPlayer';
 import { TransportControls } from '../features/player/TransportControls';
+import { ClipStrip } from '../features/clips/ClipStrip';
 import { useProjectStore } from '../stores/project';
 import { usePlayerStore } from '../stores/player';
 import { useUiStore } from '../stores/ui';
@@ -227,6 +228,9 @@ export const App: React.FC = () => {
 
           {/* Transport Controls Bar (44px) */}
           <TransportControls />
+
+          {/* Clips Strip (72px + banner) */}
+          {!isFullscreen && <ClipStrip />}
 
           {/* Bottom Footer Action Bar (56px) (hidden in fullscreen) */}
           {!isFullscreen && (

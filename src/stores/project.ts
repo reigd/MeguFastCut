@@ -33,6 +33,11 @@ interface ProjectState {
   // Actions
   addFiles: (paths: string[]) => Promise<void>;
   clearProject: () => void;
+  reorderClips: (fromIndex: number, toIndex: number) => void;
+  removeClip: (clipId: string) => void;
+  toggleClipEnabled: (clipId: string) => void;
+  duplicateClip: (clipId: string) => void;
+  splitClip: (clipId: string, splitTimeMs: number) => void;
   removeRecentFile: (path: string) => void;
   clearRecentFiles: () => void;
   setActiveClipId: (id: string | null) => void;
@@ -201,6 +206,75 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       },
       activeClipId: null,
     });
+  },
+
+  reorderClips: (fromIndex: number, toIndex: number) => {
+    const clips = [...get().project.clips];
+    if (fromIndex < 0 || fromIndex >= clips.length || toIndex < 0 || toIndex >= clips.length) return;
+    const [moved] = clips.splice(fromIndex, 1);
+    clips.splice(toIndex, 0, moved);
+    set((s) => ({ project: { ...s.project, clips } }));
+  },
+
+  removeClip: (clipId: string) => {
+    const clips = get().project.clips.filter((c) => c.id !== clipId);
+    let activeClipId = get().activeClipId;
+    if (activeClipId === clipId) {
+      activeClipId = clips[0]?.id || null;
+    }
+    set((s) => ({
+      project: { ...s.project, clips },
+      activeClipId,
+    }));
+  },
+
+  toggleClipEnabled: (clipId: string) => {
+    const clips = get().project.clips.map((c) =>
+      c.id === clipId ? { ...c, enabled: !c.enabled } : c
+    );
+    set((s) => ({ project: { ...s.project, clips } }));
+  },
+
+  duplicateClip: (clipId: string) => {
+    const clips = [...get().project.clips];
+    const index = clips.findIndex((c) => c.id === clipId);
+    if (index === -1) return;
+    const original = clips[index];
+    const duplicate: Clip = {
+      ...original,
+      id: `clip-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    };
+    clips.splice(index + 1, 0, duplicate);
+    set((s) => ({
+      project: { ...s.project, clips },
+      activeClipId: duplicate.id,
+    }));
+  },
+
+  splitClip: (clipId: string, splitTimeMs: number) => {
+    const clips = [...get().project.clips];
+    const index = clips.findIndex((c) => c.id === clipId);
+    if (index === -1) return;
+    const original = clips[index];
+
+    if (splitTimeMs <= original.inMs || splitTimeMs >= original.outMs) return;
+
+    const firstClip: Clip = {
+      ...original,
+      outMs: splitTimeMs,
+    };
+
+    const secondClip: Clip = {
+      ...original,
+      id: `clip-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      inMs: splitTimeMs,
+    };
+
+    clips.splice(index, 1, firstClip, secondClip);
+    set((s) => ({
+      project: { ...s.project, clips },
+      activeClipId: secondClip.id,
+    }));
   },
 
   removeRecentFile: (path: string) => {

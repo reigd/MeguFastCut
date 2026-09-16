@@ -60,6 +60,22 @@ export async function getCapabilities(): Promise<Capabilities> {
   }
 }
 
+export async function getClipThumbnail(path: string, timeMs: number): Promise<string> {
+  try {
+    return await invoke<string>('get_clip_thumbnail', { path, timeMs });
+  } catch (err) {
+    throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  }
+}
+
+export async function revealInExplorer(path: string): Promise<void> {
+  try {
+    await invoke('reveal_in_explorer', { path });
+  } catch (err) {
+    console.error('Failed to reveal file in explorer:', err);
+  }
+}
+
 export async function openVideoFileDialog(): Promise<string[] | null> {
   try {
     const { open } = await import('@tauri-apps/plugin-dialog');

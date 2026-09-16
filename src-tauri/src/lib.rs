@@ -13,7 +13,9 @@ pub fn run() {
             commands::get_keyframes,
             commands::get_capabilities,
             commands::check_needs_proxy,
-            commands::generate_proxy
+            commands::generate_proxy,
+            commands::get_clip_thumbnail,
+            commands::reveal_in_explorer
         ])
         .run(tauri::generate_context!())
         .expect("error while running Megu FastCut application");
