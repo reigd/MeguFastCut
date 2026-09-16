@@ -1,0 +1,19 @@
+{
+  "transform": {
+    "pos_center": "Centre",
+    "fill_color": "Fill colour"
+  },
+  "audio": {
+    "normalization": "Audio normalisation",
+    "norm_hint": "Two-pass normalisation ensures consistent loudness behaviour across devices"
+  },
+  "replace": {
+    "recycle_bin_warning": "The original file will be safely moved to the Recycle Bin. This behaviour can be undone."
+  },
+  "settings": {
+    "appearance": "Customise appearance",
+    "replace_behavior": "Replace behaviour",
+    "license_title": "Licence & Compliance",
+    "license_desc": "Application code is licenced under MIT. Bundled FFmpeg is licenced under GNU GPLv3 as an independent sidecar aggregation."
+  }
+}

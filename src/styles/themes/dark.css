@@ -1,0 +1,39 @@
+/* Dark Theme (Default) */
+[data-theme="dark"],
+:root:not([data-theme]) {
+  --bg-base: #0E0F12;
+  --bg-surface: #15171C;
+  --bg-elevated: #1D2027;
+  --bg-inset: #090A0C;
+
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  --text-primary: #F3F4F6;
+  --text-secondary: #9CA3AF;
+  --text-muted: #6B7280;
+
+  --accent: #38BDF8;
+  --accent-hover: #0EA5E9;
+  --accent-muted: rgba(56, 189, 248, 0.15);
+  --accent-contrast: #090E17;
+
+  --success: #10B981;
+  --warning: #F59E0B;
+  --danger: #EF4444;
+
+  --timeline-track: #181A20;
+  --timeline-selection: rgba(56, 189, 248, 0.25);
+  --timeline-trimmed: rgba(0, 0, 0, 0.65);
+  --clip-border: #38BDF8;
+  --playhead: #38BDF8;
+  --handle: #FFFFFF;
+  --keyframe-mark: rgba(255, 255, 255, 0.45);
+
+  --crop-overlay: rgba(0, 0, 0, 0.60);
+  --crop-guide: rgba(255, 255, 255, 0.50);
+  --waveform: #0284C7;
+
+  --icon-stroke: 1.5;
+  --icon-opacity: 1;
+}

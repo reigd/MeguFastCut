@@ -1,0 +1,42 @@
+/* Blackout Theme (True OLED Black) */
+[data-theme="blackout"] {
+  --bg-base: #000000;
+  --bg-surface: #0A0A0B;
+  --bg-elevated: #141417;
+  --bg-inset: #000000;
+
+  --border-subtle: #222226;
+  --border-strong: #3B3B42;
+
+  --text-primary: #FFFFFF;
+  --text-secondary: #A1A1AA;
+  --text-muted: #71717A;
+
+  --accent: #3B82F6;
+  --accent-hover: #60A5FA;
+  --accent-muted: rgba(59, 130, 246, 0.18);
+  --accent-contrast: #000000;
+
+  --success: #22C55E;
+  --warning: #FBBF24;
+  --danger: #F87171;
+
+  --timeline-track: #0A0A0B;
+  --timeline-selection: rgba(59, 130, 246, 0.30);
+  --timeline-trimmed: rgba(0, 0, 0, 0.85);
+  --clip-border: #3B82F6;
+  --playhead: #60A5FA;
+  --handle: #FFFFFF;
+  --keyframe-mark: rgba(255, 255, 255, 0.60);
+
+  --crop-overlay: rgba(0, 0, 0, 0.75);
+  --crop-guide: rgba(255, 255, 255, 0.70);
+  --waveform: #60A5FA;
+
+  --icon-stroke: 1.4;
+  --icon-opacity: 1;
+
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.8);
+  --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.9);
+  --shadow-3: 0 16px 40px rgba(0, 0, 0, 1.0);
+}

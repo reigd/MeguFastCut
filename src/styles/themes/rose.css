@@ -1,0 +1,38 @@
+/* Rose Theme (Dark warm rose-purple) */
+[data-theme="rose"] {
+  --bg-base: #120D15;
+  --bg-surface: #1A1320;
+  --bg-elevated: #241A2D;
+  --bg-inset: #0C080E;
+
+  --border-subtle: rgba(244, 63, 94, 0.12);
+  --border-strong: rgba(244, 63, 94, 0.24);
+
+  --text-primary: #FDE8ED;
+  --text-secondary: #D4A7B8;
+  --text-muted: #8C6878;
+
+  --accent: #F43F5E;
+  --accent-hover: #FB7185;
+  --accent-muted: rgba(244, 63, 94, 0.16);
+  --accent-contrast: #120D15;
+
+  --success: #10B981;
+  --warning: #F59E0B;
+  --danger: #E11D48;
+
+  --timeline-track: #1C1422;
+  --timeline-selection: rgba(244, 63, 94, 0.28);
+  --timeline-trimmed: rgba(18, 13, 21, 0.75);
+  --clip-border: #F43F5E;
+  --playhead: #FB7185;
+  --handle: #FFF1F2;
+  --keyframe-mark: rgba(253, 232, 237, 0.45);
+
+  --crop-overlay: rgba(18, 13, 21, 0.65);
+  --crop-guide: rgba(255, 228, 230, 0.60);
+  --waveform: #E11D48;
+
+  --icon-stroke: 1.5;
+  --icon-opacity: 1;
+}

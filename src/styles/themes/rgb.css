@@ -1,0 +1,69 @@
+/* RGB Theme (Animated dynamic accent cycle ~12s via CSS @property) */
+@property --rgb-hue {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 0deg;
+}
+
+@keyframes rgb-cycle {
+  0% {
+    --rgb-hue: 0deg;
+  }
+  100% {
+    --rgb-hue: 360deg;
+  }
+}
+
+[data-theme="rgb"] {
+  animation: rgb-cycle 12s linear infinite;
+
+  --bg-base: #0B0C10;
+  --bg-surface: #12141A;
+  --bg-elevated: #1B1E26;
+  --bg-inset: #07080A;
+
+  --border-subtle: rgba(255, 255, 255, 0.09);
+  --border-strong: hsl(var(--rgb-hue), 85%, 65%);
+
+  --text-primary: #F3F4F6;
+  --text-secondary: #9CA3AF;
+  --text-muted: #6B7280;
+
+  --accent: hsl(var(--rgb-hue), 85%, 62%);
+  --accent-hover: hsl(var(--rgb-hue), 90%, 72%);
+  --accent-muted: hsla(var(--rgb-hue), 85%, 62%, 0.16);
+  --accent-contrast: #07080A;
+
+  --success: #10B981;
+  --warning: #F59E0B;
+  --danger: #EF4444;
+
+  --timeline-track: #151720;
+  --timeline-selection: hsla(var(--rgb-hue), 85%, 62%, 0.28);
+  --timeline-trimmed: rgba(0, 0, 0, 0.70);
+  --clip-border: hsl(var(--rgb-hue), 85%, 62%);
+  --playhead: hsl(var(--rgb-hue), 90%, 70%);
+  --handle: #FFFFFF;
+  --keyframe-mark: rgba(255, 255, 255, 0.45);
+
+  --crop-overlay: rgba(0, 0, 0, 0.65);
+  --crop-guide: rgba(255, 255, 255, 0.60);
+  --waveform: hsl(var(--rgb-hue), 80%, 65%);
+
+  --icon-stroke: 1.5;
+  --icon-opacity: 1;
+}
+
+/* Isolate preview viewport from color shifts to keep color judgment clean */
+[data-theme="rgb"] .preview-area,
+[data-theme="rgb"] .preview-viewport {
+  --accent: #38BDF8;
+  --border-strong: rgba(255, 255, 255, 0.16);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="rgb"] {
+    animation: none;
+    --rgb-hue: 200deg;
+  }
+}
