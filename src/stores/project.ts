@@ -59,6 +59,7 @@ interface ProjectState {
   setCropPosition: (pos: 'center' | 'top' | 'bottom' | 'left' | 'right') => void;
   setOutput: (output: Partial<OutputSettings>) => void;
   setAudio: (audio: Partial<AudioSettings>) => void;
+  setClipVolume: (clipId: string, volumeDb: number) => void;
 }
 
 const RECENTS_KEY = 'megu-fastcut-recent-files';
@@ -432,4 +433,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   setOutput: (output) => set((s) => ({ project: { ...s.project, output: { ...s.project.output, ...output } } })),
   setAudio: (audio) => set((s) => ({ project: { ...s.project, audio: { ...s.project.audio, ...audio } } })),
+  setClipVolume: (clipId: string, volumeDb: number) => {
+    useHistoryStore.getState().recordChange(get().project.clips, 'Adjust clip volume');
+    const clips = get().project.clips.map((c) =>
+      c.id === clipId ? { ...c, volumeDb } : c
+    );
+    set((s) => ({ project: { ...s.project, clips } }));
+  },
 }));

@@ -8,7 +8,7 @@ import { VideoPlayer } from '../features/player/VideoPlayer';
 import { TransportControls } from '../features/player/TransportControls';
 import { ClipStrip } from '../features/clips/ClipStrip';
 import { Timeline } from '../features/timeline/Timeline';
-import { TransformPanel } from '../features/transform/TransformPanel';
+import { PropertiesPanel } from '../features/properties/PropertiesPanel';
 import { useProjectStore } from '../stores/project';
 import { usePlayerStore } from '../stores/player';
 import { useTimelineStore } from '../stores/timeline';
@@ -16,7 +16,7 @@ import { useUiStore } from '../stores/ui';
 import { openVideoFileDialog } from '../shared/ipc';
 import { subscribeLocale, formatTimecode, t } from '../../src/shared/i18n';
 import { Button } from '../components/Button/Button';
-import { PlusIcon, TrashIcon, FilmIcon, LightningIcon } from '../components/icons';
+import { TrashIcon, FilmIcon, LightningIcon } from '../components/icons';
 
 export const App: React.FC = () => {
   const [, setLocaleTick] = useState(0);
@@ -174,8 +174,6 @@ export const App: React.FC = () => {
   ]);
 
   const isWelcomeScreen = project.clips.length === 0;
-  const activeClip = project.clips.find((c) => c.id === activeClipId);
-  const activeSource = activeClip ? sources.find((s) => s.id === activeClip.sourceId) : sources[0];
 
   return (
     <div
@@ -228,67 +226,8 @@ export const App: React.FC = () => {
               <VideoPlayer />
             </div>
 
-            {/* Properties Panel (hidden in fullscreen preview) */}
-            {!isFullscreen && (
-              <aside
-                style={{
-                  width: 'var(--properties-width)',
-                  background: 'var(--bg-surface)',
-                  borderLeft: '1px solid var(--border-subtle)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  padding: 'var(--space-4)',
-                  overflowY: 'auto',
-                  flexShrink: 0,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-4)' }}>
-                  <h2 style={{ fontSize: 'var(--text-14)', fontWeight: 600 }}>
-                    {t('editor.properties')}
-                  </h2>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={async () => {
-                      const paths = await openVideoFileDialog();
-                      if (paths && paths.length > 0) {
-                        await addFiles(paths);
-                      }
-                    }}
-                  >
-                    <PlusIcon size={14} />
-                    {t('editor.add_clip')}
-                  </Button>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-                  {/* Clip Info */}
-                  <div
-                    style={{
-                      padding: 'var(--space-3)',
-                      background: 'var(--bg-inset)',
-                      borderRadius: 'var(--r-md)',
-                      border: '1px solid var(--border-subtle)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 'var(--space-1)',
-                    }}
-                  >
-                    <span style={{ fontSize: 'var(--text-12)', fontWeight: 600, color: 'var(--text-primary)' }}>
-                      {activeSource?.filename || sources[0]?.filename}
-                    </span>
-                    {activeSource?.probe.video && (
-                      <span style={{ fontSize: 'var(--text-11)', color: 'var(--text-muted)' }}>
-                        {activeSource.probe.video.width}×{activeSource.probe.video.height} · {activeSource.probe.video.codec.toUpperCase()} · {(activeSource.probe.video.fpsNum / activeSource.probe.video.fpsDen).toFixed(2)} fps
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Transform Panel (Aspect & Framing) */}
-                  <TransformPanel />
-                </div>
-              </aside>
-            )}
+            {/* Properties Panel (Transform & Audio tabs) */}
+            {!isFullscreen && <PropertiesPanel />}
           </div>
 
           {/* Transport Controls Bar (44px) */}

@@ -144,15 +144,17 @@ export const VideoPlayer: React.FC = () => {
   // Sync playback state
   useEffect(() => {
     if (!activeVideo) return;
-    activeVideo.muted = isMuted;
-    activeVideo.volume = volume;
+    const isAudioMuted = isMuted || project.audio.muted;
+    const gainLinear = Math.pow(10, project.audio.volumeDb / 20);
+    activeVideo.muted = isAudioMuted;
+    activeVideo.volume = Math.max(0, Math.min(1, volume * gainLinear));
 
     if (isPlaying) {
       activeVideo.play().catch(() => pause());
     } else {
       activeVideo.pause();
     }
-  }, [activeVideo, isPlaying, isMuted, volume, pause]);
+  }, [activeVideo, isPlaying, isMuted, volume, project.audio.muted, project.audio.volumeDb, pause]);
 
   // Seeking sync
   useEffect(() => {
