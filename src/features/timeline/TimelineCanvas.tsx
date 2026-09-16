@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { useProjectStore } from '../../stores/project';
 import { usePlayerStore } from '../../stores/player';
 import { useTimelineStore } from '../../stores/timeline';
+import { useHistoryStore } from '../../stores/history';
+import { Clip } from '../../shared/types';
 import {
   TimelineClipSegment,
   SnapCandidate,
@@ -19,6 +21,7 @@ interface DragState {
   startX: number;
   initialInMs?: number;
   initialOutMs?: number;
+  initialClips?: Clip[];
 }
 
 export const TimelineCanvas: React.FC = () => {
@@ -408,6 +411,7 @@ export const TimelineCanvas: React.FC = () => {
           startX: mouseX,
           initialInMs: activeSeg.inMs,
           initialOutMs: activeSeg.outMs,
+          initialClips: JSON.parse(JSON.stringify(project.clips)),
         };
         (e.target as HTMLElement).setPointerCapture(e.pointerId);
         return;
@@ -421,6 +425,7 @@ export const TimelineCanvas: React.FC = () => {
           startX: mouseX,
           initialInMs: activeSeg.inMs,
           initialOutMs: activeSeg.outMs,
+          initialClips: JSON.parse(JSON.stringify(project.clips)),
         };
         (e.target as HTMLElement).setPointerCapture(e.pointerId);
         return;
@@ -581,6 +586,18 @@ export const TimelineCanvas: React.FC = () => {
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (dragStateRef.current) {
+      const state = dragStateRef.current;
+      if (state.initialClips && (state.type === 'trim-in' || state.type === 'trim-out')) {
+        const currentClips = useProjectStore.getState().project.clips;
+        const activeCurrent = currentClips.find((c) => c.id === state.clipId);
+        if (
+          activeCurrent &&
+          (activeCurrent.inMs !== state.initialInMs || activeCurrent.outMs !== state.initialOutMs)
+        ) {
+          useHistoryStore.getState().recordChange(state.initialClips, 'Trim clip');
+        }
+      }
+
       dragStateRef.current = null;
       try {
         (e.target as HTMLElement).releasePointerCapture(e.pointerId);

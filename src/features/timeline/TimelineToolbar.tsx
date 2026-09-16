@@ -2,10 +2,14 @@ import React from 'react';
 import { useProjectStore } from '../../stores/project';
 import { usePlayerStore } from '../../stores/player';
 import { useTimelineStore } from '../../stores/timeline';
+import { useHistoryStore } from '../../stores/history';
 import { Button } from '../../components/Button/Button';
 import { Tooltip } from '../../components/Tooltip/Tooltip';
+import { ClipTimeInputs } from './ClipTimeInputs';
 import {
   ScissorsIcon,
+  UndoIcon,
+  RedoIcon,
   ZoomInIcon,
   ZoomOutIcon,
   ResizeIcon,
@@ -14,8 +18,9 @@ import {
 import { t, formatTimecode } from '../../shared/i18n';
 
 export const TimelineToolbar: React.FC = () => {
-  const { project, activeClipId, splitClip } = useProjectStore();
+  const { project, activeClipId, splitClip, undo, redo } = useProjectStore();
   const { currentTimeMs } = usePlayerStore();
+  const { canUndo, canRedo } = useHistoryStore();
   const {
     pixelsPerMs,
     snappingEnabled,
@@ -31,7 +36,6 @@ export const TimelineToolbar: React.FC = () => {
 
   const handleSplit = () => {
     if (!activeClipId) return;
-    // Find active clip's timeline range
     let accumulated = 0;
     const activeClip = project.clips.find((c) => c.id === activeClipId);
     if (!activeClip) return;
@@ -52,7 +56,7 @@ export const TimelineToolbar: React.FC = () => {
   };
 
   const handleFit = () => {
-    const canvasWidth = window.innerWidth - 312; // approximate properties panel width
+    const canvasWidth = window.innerWidth - 312;
     fitToProject(totalDurationMs, Math.max(300, canvasWidth));
   };
 
@@ -69,7 +73,7 @@ export const TimelineToolbar: React.FC = () => {
         userSelect: 'none',
       }}
     >
-      {/* Left Action: Split at Playhead */}
+      {/* Left Action: Split, Undo, Redo */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)' }}>
         <Tooltip content={`${t('timeline.split_at_playhead')} (S)`}>
           <Button
@@ -78,6 +82,7 @@ export const TimelineToolbar: React.FC = () => {
             onClick={handleSplit}
             disabled={!activeClipId}
             aria-label={t('timeline.split_at_playhead')}
+            style={{ padding: '4px 8px' }}
           >
             <ScissorsIcon size={14} />
             <span style={{ fontSize: 'var(--text-12)', fontWeight: 500 }}>
@@ -85,30 +90,71 @@ export const TimelineToolbar: React.FC = () => {
             </span>
           </Button>
         </Tooltip>
+
+        <div
+          style={{
+            width: '1px',
+            height: '14px',
+            background: 'var(--border-subtle)',
+            margin: '0 2px',
+          }}
+        />
+
+        <Tooltip content={`${t('common.undo')} (Ctrl+Z)`}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={undo}
+            disabled={!canUndo}
+            aria-label={t('common.undo')}
+            style={{ padding: '4px 6px' }}
+          >
+            <UndoIcon size={14} />
+          </Button>
+        </Tooltip>
+
+        <Tooltip content={`${t('common.redo')} (Ctrl+Shift+Z)`}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={redo}
+            disabled={!canRedo}
+            aria-label={t('common.redo')}
+            style={{ padding: '4px 6px' }}
+          >
+            <RedoIcon size={14} />
+          </Button>
+        </Tooltip>
       </div>
 
-      {/* Center: Position Timecode */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-        <span
-          className="timecode"
-          style={{
-            fontSize: 'var(--text-12)',
-            color: 'var(--text-primary)',
-            fontWeight: 600,
-          }}
-        >
-          {formatTimecode(currentTimeMs)}
-        </span>
-        <span style={{ color: 'var(--text-muted)', fontSize: 'var(--text-12)' }}>/</span>
-        <span
-          className="timecode"
-          style={{
-            fontSize: 'var(--text-12)',
-            color: 'var(--text-secondary)',
-          }}
-        >
-          {formatTimecode(totalDurationMs)}
-        </span>
+      {/* Center: Active Clip Numeric In/Out Inputs OR Sequence Timecode */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-4)' }}>
+        {activeClipId ? (
+          <ClipTimeInputs />
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <span
+              className="timecode"
+              style={{
+                fontSize: 'var(--text-12)',
+                color: 'var(--text-primary)',
+                fontWeight: 600,
+              }}
+            >
+              {formatTimecode(currentTimeMs)}
+            </span>
+            <span style={{ color: 'var(--text-muted)', fontSize: 'var(--text-12)' }}>/</span>
+            <span
+              className="timecode"
+              style={{
+                fontSize: 'var(--text-12)',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              {formatTimecode(totalDurationMs)}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Right Actions: Snapping & Zoom Controls */}

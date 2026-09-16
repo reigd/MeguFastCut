@@ -11,6 +11,7 @@ import {
   AudioSettings,
 } from '../shared/types';
 import { probeFile } from '../shared/ipc';
+import { useHistoryStore } from './history';
 
 export interface RecentItem {
   path: string;
@@ -38,7 +39,9 @@ interface ProjectState {
   toggleClipEnabled: (clipId: string) => void;
   duplicateClip: (clipId: string) => void;
   splitClip: (clipId: string, splitTimeMs: number) => void;
-  trimClip: (clipId: string, inMs: number, outMs: number) => void;
+  trimClip: (clipId: string, inMs: number, outMs: number, recordHistory?: boolean) => void;
+  undo: () => void;
+  redo: () => void;
   removeRecentFile: (path: string) => void;
   clearRecentFiles: () => void;
   setActiveClipId: (id: string | null) => void;
@@ -212,13 +215,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   reorderClips: (fromIndex: number, toIndex: number) => {
     const clips = [...get().project.clips];
     if (fromIndex < 0 || fromIndex >= clips.length || toIndex < 0 || toIndex >= clips.length) return;
+    useHistoryStore.getState().recordChange(clips, 'Reorder clips');
     const [moved] = clips.splice(fromIndex, 1);
     clips.splice(toIndex, 0, moved);
     set((s) => ({ project: { ...s.project, clips } }));
   },
 
   removeClip: (clipId: string) => {
-    const clips = get().project.clips.filter((c) => c.id !== clipId);
+    const previousClips = get().project.clips;
+    useHistoryStore.getState().recordChange(previousClips, 'Remove clip');
+    const clips = previousClips.filter((c) => c.id !== clipId);
     let activeClipId = get().activeClipId;
     if (activeClipId === clipId) {
       activeClipId = clips[0]?.id || null;
@@ -230,7 +236,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   toggleClipEnabled: (clipId: string) => {
-    const clips = get().project.clips.map((c) =>
+    const previousClips = get().project.clips;
+    useHistoryStore.getState().recordChange(previousClips, 'Toggle clip');
+    const clips = previousClips.map((c) =>
       c.id === clipId ? { ...c, enabled: !c.enabled } : c
     );
     set((s) => ({ project: { ...s.project, clips } }));
@@ -240,6 +248,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const clips = [...get().project.clips];
     const index = clips.findIndex((c) => c.id === clipId);
     if (index === -1) return;
+    useHistoryStore.getState().recordChange(clips, 'Duplicate clip');
     const original = clips[index];
     const duplicate: Clip = {
       ...original,
@@ -259,6 +268,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const original = clips[index];
 
     if (splitTimeMs <= original.inMs || splitTimeMs >= original.outMs) return;
+    useHistoryStore.getState().recordChange(clips, 'Split clip');
 
     const firstClip: Clip = {
       ...original,
@@ -278,7 +288,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }));
   },
 
-  trimClip: (clipId: string, inMs: number, outMs: number) => {
+  trimClip: (clipId: string, inMs: number, outMs: number, recordHistory = false) => {
+    if (recordHistory) {
+      useHistoryStore.getState().recordChange(get().project.clips, 'Trim clip');
+    }
     const clips = get().project.clips.map((c) => {
       if (c.id !== clipId) return c;
       const src = get().sources.find((s) => s.id === c.sourceId);
@@ -292,6 +305,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       };
     });
     set((s) => ({ project: { ...s.project, clips } }));
+  },
+
+  undo: () => {
+    const currentClips = get().project.clips;
+    const restoredClips = useHistoryStore.getState().undo(currentClips);
+    if (restoredClips) {
+      set((s) => ({
+        project: { ...s.project, clips: restoredClips },
+        activeClipId: restoredClips.find((c) => c.id === s.activeClipId)?.id || restoredClips[0]?.id || null,
+      }));
+    }
+  },
+
+  redo: () => {
+    const currentClips = get().project.clips;
+    const nextClips = useHistoryStore.getState().redo(currentClips);
+    if (nextClips) {
+      set((s) => ({
+        project: { ...s.project, clips: nextClips },
+        activeClipId: nextClips.find((c) => c.id === s.activeClipId)?.id || nextClips[0]?.id || null,
+      }));
+    }
   },
 
   removeRecentFile: (path: string) => {

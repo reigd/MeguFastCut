@@ -19,7 +19,16 @@ import { PlusIcon, TrashIcon, FilmIcon, LightningIcon } from '../components/icon
 
 export const App: React.FC = () => {
   const [, setLocaleTick] = useState(0);
-  const { project, sources, activeClipId, addFiles, clearProject, splitClip } = useProjectStore();
+  const {
+    project,
+    sources,
+    activeClipId,
+    addFiles,
+    clearProject,
+    splitClip,
+    undo,
+    redo,
+  } = useProjectStore();
   const { toggleSnapping, zoomBy } = useTimelineStore();
   const {
     isFullscreen,
@@ -56,7 +65,16 @@ export const App: React.FC = () => {
         return;
       }
 
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if (
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && e.shiftKey) ||
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y')
+      ) {
+        e.preventDefault();
+        redo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         const paths = await openVideoFileDialog();
         if (paths && paths.length > 0) {
@@ -147,6 +165,8 @@ export const App: React.FC = () => {
     project.clips,
     activeClipId,
     splitClip,
+    undo,
+    redo,
     toggleSnapping,
     zoomBy,
     totalDurationMs,
