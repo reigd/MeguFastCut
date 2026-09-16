@@ -8,6 +8,7 @@ import { VideoPlayer } from '../features/player/VideoPlayer';
 import { TransportControls } from '../features/player/TransportControls';
 import { ClipStrip } from '../features/clips/ClipStrip';
 import { Timeline } from '../features/timeline/Timeline';
+import { TransformPanel } from '../features/transform/TransformPanel';
 import { useProjectStore } from '../stores/project';
 import { usePlayerStore } from '../stores/player';
 import { useTimelineStore } from '../stores/timeline';
@@ -173,6 +174,8 @@ export const App: React.FC = () => {
   ]);
 
   const isWelcomeScreen = project.clips.length === 0;
+  const activeClip = project.clips.find((c) => c.id === activeClipId);
+  const activeSource = activeClip ? sources.find((s) => s.id === activeClip.sourceId) : sources[0];
 
   return (
     <div
@@ -272,14 +275,17 @@ export const App: React.FC = () => {
                     }}
                   >
                     <span style={{ fontSize: 'var(--text-12)', fontWeight: 600, color: 'var(--text-primary)' }}>
-                      {sources[0]?.filename}
+                      {activeSource?.filename || sources[0]?.filename}
                     </span>
-                    {sources[0]?.probe.video && (
+                    {activeSource?.probe.video && (
                       <span style={{ fontSize: 'var(--text-11)', color: 'var(--text-muted)' }}>
-                        {sources[0].probe.video.width}×{sources[0].probe.video.height} · {sources[0].probe.video.codec.toUpperCase()} · {(sources[0].probe.video.fpsNum / sources[0].probe.video.fpsDen).toFixed(2)} fps
+                        {activeSource.probe.video.width}×{activeSource.probe.video.height} · {activeSource.probe.video.codec.toUpperCase()} · {(activeSource.probe.video.fpsNum / activeSource.probe.video.fpsDen).toFixed(2)} fps
                       </span>
                     )}
                   </div>
+
+                  {/* Transform Panel (Aspect & Framing) */}
+                  <TransformPanel />
                 </div>
               </aside>
             )}

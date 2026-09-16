@@ -4,6 +4,7 @@ import { useProjectStore } from '../../stores/project';
 import { usePlayerStore } from '../../stores/player';
 import { ensureProxy } from '../../shared/proxy-manager';
 import { computeGeometry, buildCssTransform, resolveAspectRatio } from '../../shared/geometry';
+import { CropOverlay } from '../transform/CropOverlay';
 import { t } from '../../shared/i18n';
 import { SparkleIcon } from '../../components/icons';
 
@@ -23,10 +24,26 @@ export const VideoPlayer: React.FC = () => {
   } = usePlayerStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const videoARef = useRef<HTMLVideoElement>(null);
   const videoBRef = useRef<HTMLVideoElement>(null);
 
   const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A');
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    if (!viewportRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setViewportSize({
+          width: entry.contentRect.width,
+          height: entry.contentRect.height,
+        });
+      }
+    });
+    ro.observe(viewportRef.current);
+    return () => ro.disconnect();
+  }, []);
 
   // Compute active clip based on currentTimeMs
   const { currentClip, currentSource, currentClipIndex, clipLocalTimeMs } = useMemo(() => {
@@ -241,6 +258,15 @@ export const VideoPlayer: React.FC = () => {
 
   const isProxyGenerating = currentSource ? proxyStatus[currentSource.id] === 'generating' : false;
 
+  const objectPosition = useMemo(() => {
+    if (showOriginalAspect || project.fitMode !== 'crop') return 'center';
+    const spanX = 1 - project.crop.width;
+    const spanY = 1 - project.crop.height;
+    const pctX = spanX > 0.001 ? Math.max(0, Math.min(100, (project.crop.x / spanX) * 100)) : 50;
+    const pctY = spanY > 0.001 ? Math.max(0, Math.min(100, (project.crop.y / spanY) * 100)) : 50;
+    return `${pctX.toFixed(2)}% ${pctY.toFixed(2)}%`;
+  }, [showOriginalAspect, project.fitMode, project.crop]);
+
   return (
     <div
       ref={containerRef}
@@ -312,6 +338,7 @@ export const VideoPlayer: React.FC = () => {
 
       {/* Aspect Ratio Bounding Viewport with 200ms smooth transition */}
       <div
+        ref={viewportRef}
         className="preview-viewport"
         data-target-w={geometry.targetWidth}
         data-target-h={geometry.targetHeight}
@@ -340,6 +367,7 @@ export const VideoPlayer: React.FC = () => {
             width: project.fitMode === 'stretch' ? '100%' : '100%',
             height: project.fitMode === 'stretch' ? '100%' : '100%',
             objectFit: project.fitMode === 'stretch' ? 'fill' : project.fitMode === 'crop' ? 'cover' : 'contain',
+            objectPosition,
             transform: cssTransform,
             opacity: activeSlot === 'A' ? 1 : 0,
             transition: 'opacity var(--dur-fast) var(--ease-out)',
@@ -356,12 +384,18 @@ export const VideoPlayer: React.FC = () => {
             width: project.fitMode === 'stretch' ? '100%' : '100%',
             height: project.fitMode === 'stretch' ? '100%' : '100%',
             objectFit: project.fitMode === 'stretch' ? 'fill' : project.fitMode === 'crop' ? 'cover' : 'contain',
+            objectPosition,
             transform: cssTransform,
             opacity: activeSlot === 'B' ? 1 : 0,
             transition: 'opacity var(--dur-fast) var(--ease-out)',
             pointerEvents: 'none',
           }}
         />
+
+        {/* Interactive Crop Overlay */}
+        {!showOriginalAspect && project.fitMode === 'crop' && (
+          <CropOverlay width={viewportSize.width} height={viewportSize.height} />
+        )}
       </div>
     </div>
   );
