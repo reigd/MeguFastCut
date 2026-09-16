@@ -11,7 +11,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::probe_file,
             commands::get_keyframes,
-            commands::get_capabilities
+            commands::get_capabilities,
+            commands::check_needs_proxy,
+            commands::generate_proxy
         ])
         .run(tauri::generate_context!())
         .expect("error while running Megu FastCut application");

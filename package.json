@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "i18n:check": "node scripts/i18n-check.mjs",
-    "compliance:check": "node scripts/verify-bundle-compliance.mjs"
+    "compliance:check": "node scripts/verify-bundle-compliance.mjs",
+    "test:geometry": "node --experimental-strip-types scripts/geometry-test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",

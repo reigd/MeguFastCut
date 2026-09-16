@@ -4,16 +4,29 @@ import { ToastContainer } from '../components/Toast/ToastContainer';
 import { WhatsNewDrawer } from '../features/whats-new/WhatsNewDrawer';
 import { SettingsModal } from '../features/settings/SettingsModal';
 import { WelcomeScreen } from '../features/welcome/WelcomeScreen';
+import { VideoPlayer } from '../features/player/VideoPlayer';
+import { TransportControls } from '../features/player/TransportControls';
 import { useProjectStore } from '../stores/project';
+import { usePlayerStore } from '../stores/player';
 import { useUiStore } from '../stores/ui';
 import { openVideoFileDialog } from '../shared/ipc';
-import { t, subscribeLocale, formatTimecode } from '../shared/i18n';
+import { subscribeLocale, formatTimecode, t } from '../../src/shared/i18n';
 import { Button } from '../components/Button/Button';
-import { PlusIcon, TrashIcon, FilmIcon } from '../components/icons';
+import { PlusIcon, TrashIcon, FilmIcon, LightningIcon } from '../components/icons';
 
 export const App: React.FC = () => {
   const [, setLocaleTick] = useState(0);
-  const { project, addFiles, clearProject } = useProjectStore();
+  const { project, sources, addFiles, clearProject } = useProjectStore();
+  const {
+    isFullscreen,
+    togglePlay,
+    pause,
+    stepFrame,
+    skipSeconds,
+    seek,
+    toggleMute,
+    setFullscreen,
+  } = usePlayerStore();
   const { setSettingsOpen } = useUiStore();
 
   // Re-render on locale changes
@@ -23,9 +36,17 @@ export const App: React.FC = () => {
     });
   }, []);
 
-  // Global keyboard shortcuts (Ctrl+O, Ctrl+,, etc.)
+  // Keyboard navigation & Shortcuts
   useEffect(() => {
     const handleKeyDown = async (e: KeyboardEvent) => {
+      // Don't trigger transport shortcuts if an input/textarea is focused
+      if (
+        document.activeElement &&
+        ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)
+      ) {
+        return;
+      }
+
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         const paths = await openVideoFileDialog();
@@ -35,11 +56,60 @@ export const App: React.FC = () => {
       } else if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault();
         setSettingsOpen(true);
+      } else if (e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        pause();
+      } else if (e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        skipSeconds(-10);
+      } else if (e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        skipSeconds(10);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        if (e.shiftKey) skipSeconds(-1);
+        else stepFrame(-1);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (e.shiftKey) skipSeconds(1);
+        else stepFrame(1);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        seek(0);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        const total = project.clips.reduce((sum, c) => sum + (c.outMs - c.inMs), 0);
+        seek(total);
+      } else if (e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setFullscreen(!isFullscreen);
+      } else if (e.key === 'Escape' && isFullscreen) {
+        e.preventDefault();
+        setFullscreen(false);
+      } else if (e.key.toLowerCase() === 'm') {
+        e.preventDefault();
+        toggleMute();
       }
     };
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [addFiles, setSettingsOpen]);
+  }, [
+    addFiles,
+    setSettingsOpen,
+    togglePlay,
+    pause,
+    skipSeconds,
+    stepFrame,
+    seek,
+    toggleMute,
+    isFullscreen,
+    setFullscreen,
+    project.clips,
+  ]);
 
   const totalDurationMs = project.clips.reduce((sum, c) => sum + (c.outMs - c.inMs), 0);
   const isWelcomeScreen = project.clips.length === 0;
@@ -55,10 +125,12 @@ export const App: React.FC = () => {
         background: 'var(--bg-base)',
       }}
     >
-      {/* Custom Titlebar with dynamic clips count & duration */}
-      <Titlebar clipCount={project.clips.length} totalDurationMs={totalDurationMs} />
+      {/* Titlebar (hidden in fullscreen preview mode) */}
+      {!isFullscreen && (
+        <Titlebar clipCount={project.clips.length} totalDurationMs={totalDurationMs} />
+      )}
 
-      {/* Screen Views */}
+      {/* Main View Area */}
       {isWelcomeScreen ? (
         <WelcomeScreen />
       ) : (
@@ -68,115 +140,155 @@ export const App: React.FC = () => {
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
-            padding: 'var(--space-6)',
-            gap: 'var(--space-4)',
+            position: 'relative',
           }}
         >
-          {/* Active project clips placeholder ready for Stage 3 & 4 */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: 'var(--space-4) var(--space-6)',
-              background: 'var(--bg-surface)',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--r-lg)',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-              <FilmIcon size={20} style={{ color: 'var(--accent)' }} />
-              <div>
-                <h2 style={{ fontSize: 'var(--text-14)', fontWeight: 600 }}>
-                  {t('titlebar.clips_count', { count: project.clips.length })}
-                </h2>
-                <span className="timecode" style={{ fontSize: 'var(--text-12)', color: 'var(--text-secondary)' }}>
-                  {t('titlebar.total_duration', { time: formatTimecode(totalDurationMs) })}
-                </span>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={async () => {
-                  const paths = await openVideoFileDialog();
-                  if (paths && paths.length > 0) {
-                    await addFiles(paths);
-                  }
-                }}
-              >
-                <PlusIcon size={16} />
-                {t('editor.add_clip')}
-              </Button>
-
-              <Button size="sm" variant="ghost" onClick={clearProject}>
-                <TrashIcon size={16} />
-                {t('common.close')}
-              </Button>
-            </div>
-          </div>
-
-          {/* Clips List */}
+          {/* Upper Section: Preview + Properties Panel */}
           <div
             style={{
               flex: 1,
-              background: 'var(--bg-surface)',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--r-lg)',
-              padding: 'var(--space-4)',
-              overflowY: 'auto',
               display: 'flex',
-              flexDirection: 'column',
-              gap: 'var(--space-2)',
+              overflow: 'hidden',
+              minHeight: 0,
             }}
           >
-            {project.clips.map((clip, idx) => {
-              const src = useProjectStore.getState().sources.find((s) => s.id === clip.sourceId);
-              return (
-                <div
-                  key={clip.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: 'var(--space-3) var(--space-4)',
-                    background: 'var(--bg-elevated)',
-                    border: '1px solid var(--border-subtle)',
-                    borderRadius: 'var(--r-md)',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-                    <span style={{ fontSize: 'var(--text-12)', color: 'var(--text-muted)', minWidth: '24px' }}>
-                      #{idx + 1}
+            {/* Center Preview Viewport */}
+            <div
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+            >
+              <VideoPlayer />
+            </div>
+
+            {/* Properties Panel (hidden in fullscreen preview) */}
+            {!isFullscreen && (
+              <aside
+                style={{
+                  width: 'var(--properties-width)',
+                  background: 'var(--bg-surface)',
+                  borderLeft: '1px solid var(--border-subtle)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  padding: 'var(--space-4)',
+                  overflowY: 'auto',
+                  flexShrink: 0,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-4)' }}>
+                  <h2 style={{ fontSize: 'var(--text-14)', fontWeight: 600 }}>
+                    {t('editor.properties')}
+                  </h2>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={async () => {
+                      const paths = await openVideoFileDialog();
+                      if (paths && paths.length > 0) {
+                        await addFiles(paths);
+                      }
+                    }}
+                  >
+                    <PlusIcon size={14} />
+                    {t('editor.add_clip')}
+                  </Button>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+                  {/* Clip Info */}
+                  <div
+                    style={{
+                      padding: 'var(--space-3)',
+                      background: 'var(--bg-inset)',
+                      borderRadius: 'var(--r-md)',
+                      border: '1px solid var(--border-subtle)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 'var(--space-1)',
+                    }}
+                  >
+                    <span style={{ fontSize: 'var(--text-12)', fontWeight: 600, color: 'var(--text-primary)' }}>
+                      {sources[0]?.filename}
                     </span>
-                    <FilmIcon size={18} style={{ color: 'var(--accent)' }} />
-                    <span style={{ fontWeight: 500, fontSize: 'var(--text-13)' }}>
-                      {src?.filename || clip.id}
-                    </span>
-                    {src?.probe.video && (
-                      <span
-                        style={{
-                          fontSize: 'var(--text-11)',
-                          color: 'var(--text-muted)',
-                          background: 'var(--bg-inset)',
-                          padding: '2px 6px',
-                          borderRadius: 'var(--r-sm)',
-                        }}
-                      >
-                        {src.probe.video.width}×{src.probe.video.height} · {src.probe.video.codec.toUpperCase()} · {(src.probe.video.fpsNum / src.probe.video.fpsDen).toFixed(2)} fps
+                    {sources[0]?.probe.video && (
+                      <span style={{ fontSize: 'var(--text-11)', color: 'var(--text-muted)' }}>
+                        {sources[0].probe.video.width}×{sources[0].probe.video.height} · {sources[0].probe.video.codec.toUpperCase()} · {(sources[0].probe.video.fpsNum / sources[0].probe.video.fpsDen).toFixed(2)} fps
                       </span>
                     )}
                   </div>
-
-                  <span className="timecode" style={{ fontSize: 'var(--text-12)', color: 'var(--accent)' }}>
-                    {formatTimecode(clip.outMs - clip.inMs)}
-                  </span>
                 </div>
-              );
-            })}
+              </aside>
+            )}
           </div>
+
+          {/* Transport Controls Bar (44px) */}
+          <TransportControls />
+
+          {/* Bottom Footer Action Bar (56px) (hidden in fullscreen) */}
+          {!isFullscreen && (
+            <footer
+              style={{
+                height: 'var(--footer-height)',
+                background: 'var(--bg-surface)',
+                borderTop: '1px solid var(--border-subtle)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '0 var(--space-6)',
+                userSelect: 'none',
+                flexShrink: 0,
+              }}
+            >
+              {/* Left Result Summary */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                <span style={{ fontSize: 'var(--text-13)', color: 'var(--text-secondary)' }}>
+                  {t('editor.result_summary')}:
+                </span>
+                <span className="timecode" style={{ fontSize: 'var(--text-13)', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  {formatTimecode(totalDurationMs)}
+                </span>
+                <span>·</span>
+                <span style={{ fontSize: 'var(--text-12)', color: 'var(--text-secondary)' }}>
+                  {sources[0]?.probe.video ? `${sources[0].probe.video.width}×${sources[0].probe.video.height}` : 'Auto'}
+                </span>
+              </div>
+
+              {/* Mode Badge & Action Buttons */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    padding: '4px 10px',
+                    background: 'var(--bg-inset)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--r-full)',
+                    color: 'var(--accent)',
+                    fontSize: 'var(--text-12)',
+                    fontWeight: 600,
+                  }}
+                >
+                  <LightningIcon size={14} />
+                  <span>{t('editor.fast_badge')}</span>
+                </div>
+
+                <Button variant="secondary" onClick={clearProject}>
+                  <TrashIcon size={16} />
+                  <span>{t('common.close')}</span>
+                </Button>
+
+                <Button variant="primary">
+                  <FilmIcon size={16} />
+                  <span>{t('editor.export_btn')}</span>
+                </Button>
+              </div>
+            </footer>
+          )}
         </div>
       )}
 
