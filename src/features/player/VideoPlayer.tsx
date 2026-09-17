@@ -121,7 +121,9 @@ export const VideoPlayer: React.FC = () => {
       if (activeVideo.getAttribute('data-raw-src') !== currentVideoSrc) {
         activeVideo.src = currentVideoSrc;
         activeVideo.setAttribute('data-raw-src', currentVideoSrc);
-        activeVideo.currentTime = clipLocalTimeMs / 1000;
+        activeVideo.load();
+        const targetSec = clipLocalTimeMs / 1000;
+        activeVideo.currentTime = targetSec;
         if (isPlaying) {
           activeVideo.play().catch(() => {});
         }
@@ -135,6 +137,7 @@ export const VideoPlayer: React.FC = () => {
       if (passiveVideo.getAttribute('data-raw-src') !== nextVideoSrc) {
         passiveVideo.src = nextVideoSrc;
         passiveVideo.setAttribute('data-raw-src', nextVideoSrc);
+        passiveVideo.load();
         passiveVideo.currentTime = nextClip.inMs / 1000;
         passiveVideo.pause();
       }
@@ -332,6 +335,8 @@ export const VideoPlayer: React.FC = () => {
         >
           <video
             src={currentVideoSrc}
+            preload="auto"
+            playsInline
             muted
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           />
@@ -363,7 +368,17 @@ export const VideoPlayer: React.FC = () => {
         {/* Video Element A */}
         <video
           ref={videoARef}
+          preload="auto"
           playsInline
+          onLoadedMetadata={(e) => {
+            if (activeSlot === 'A') {
+              e.currentTarget.currentTime = clipLocalTimeMs / 1000;
+              if (isPlaying) e.currentTarget.play().catch(() => {});
+            }
+          }}
+          onError={(e) => {
+            console.error('Video A load error:', e.currentTarget.error?.message, e.currentTarget.error?.code);
+          }}
           style={{
             position: 'absolute',
             width: project.fitMode === 'stretch' ? '100%' : '100%',
@@ -380,7 +395,17 @@ export const VideoPlayer: React.FC = () => {
         {/* Video Element B (Preload buffer for seamless multi-clip cuts) */}
         <video
           ref={videoBRef}
+          preload="auto"
           playsInline
+          onLoadedMetadata={(e) => {
+            if (activeSlot === 'B') {
+              e.currentTarget.currentTime = clipLocalTimeMs / 1000;
+              if (isPlaying) e.currentTarget.play().catch(() => {});
+            }
+          }}
+          onError={(e) => {
+            console.error('Video B load error:', e.currentTarget.error?.message, e.currentTarget.error?.code);
+          }}
           style={{
             position: 'absolute',
             width: project.fitMode === 'stretch' ? '100%' : '100%',

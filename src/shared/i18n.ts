@@ -54,7 +54,7 @@ function getPluralCategory(count: number, locale: Locale): Intl.LDMLPluralRule {
  * Parses simple ICU plural string `{count, plural, one {# clip} other {# clips}}`
  */
 function parsePlural(template: string, count: number, locale: Locale): string {
-  const pluralRegex = /\{(\w+),\s*plural,\s*([^}]+)\}/g;
+  const pluralRegex = /\{(\w+),\s*plural,\s*((?:(one|few|many|zero|two|other)\s*\{[^{}]*\}\s*)+)\}/g;
   return template.replace(pluralRegex, (_match, _varName, cases) => {
     const category = getPluralCategory(count, locale);
     // Parse cases: e.g. "one {# кліп} few {# кліпи} many {# кліпів} other {# кліпів}"
