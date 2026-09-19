@@ -1,7 +1,7 @@
 #[cfg(windows)]
 use winreg::enums::*;
 #[cfg(windows)]
-use winreg::RegKey;
+use winreg::{RegKey, RegValue};
 
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "mov", "avi", "webm", "flv", "wmv", "ts", "m4v", "3gp",
@@ -9,6 +9,20 @@ pub const VIDEO_EXTENSIONS: &[&str] = &[
 ];
 
 const MENU_TITLE: &str = "Редактировать в Megu FastCut";
+
+#[cfg(windows)]
+fn set_reg_sz(key: &RegKey, name: &str, val: &str) -> std::io::Result<()> {
+    let mut bytes: Vec<u8> = Vec::new();
+    for u in val.encode_utf16() {
+        bytes.extend_from_slice(&u.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    let reg_val = RegValue {
+        vtype: REG_SZ,
+        bytes: bytes.into(),
+    };
+    key.set_raw_value(name, &reg_val)
+}
 
 #[cfg(windows)]
 pub fn register_context_menu() -> Result<(), String> {
@@ -26,50 +40,51 @@ pub fn register_context_menu() -> Result<(), String> {
     let (video_verb, _) = classes
         .create_subkey(r"SystemFileAssociations\video\shell\MeguFastCut")
         .map_err(|e| format!("Failed to create video shell key: {}", e))?;
-    let _ = video_verb.set_value("", &MENU_TITLE);
-    let _ = video_verb.set_value("MUIVerb", &MENU_TITLE);
-    let _ = video_verb.set_value("Icon", &icon_str);
+    let _ = set_reg_sz(&video_verb, "", MENU_TITLE);
+    let _ = set_reg_sz(&video_verb, "MUIVerb", MENU_TITLE);
+    let _ = set_reg_sz(&video_verb, "Icon", &icon_str);
 
     let (video_cmd, _) = video_verb
         .create_subkey("command")
         .map_err(|e| format!("Failed to create video command key: {}", e))?;
-    let _ = video_cmd.set_value("", &cmd_str);
+    let _ = set_reg_sz(&video_cmd, "", &cmd_str);
 
     // 2. Register for each specific video extension
     for ext in VIDEO_EXTENSIONS {
         let ext_shell_path = format!(r"SystemFileAssociations\.{}\shell\MeguFastCut", ext);
         if let Ok((ext_verb, _)) = classes.create_subkey(&ext_shell_path) {
-            let _ = ext_verb.set_value("", &MENU_TITLE);
-            let _ = ext_verb.set_value("MUIVerb", &MENU_TITLE);
-            let _ = ext_verb.set_value("Icon", &icon_str);
+            let _ = set_reg_sz(&ext_verb, "", MENU_TITLE);
+            let _ = set_reg_sz(&ext_verb, "MUIVerb", MENU_TITLE);
+            let _ = set_reg_sz(&ext_verb, "Icon", &icon_str);
             if let Ok((ext_cmd, _)) = ext_verb.create_subkey("command") {
-                let _ = ext_cmd.set_value("", &cmd_str);
+                let _ = set_reg_sz(&ext_cmd, "", &cmd_str);
             }
         }
 
         let ext_openwith_path = format!(r".{}\OpenWithList\megu-fastcut.exe", ext);
         if let Ok((ow_key, _)) = classes.create_subkey(&ext_openwith_path) {
-            let _ = ow_key.set_value("", &"");
+            let _ = set_reg_sz(&ow_key, "", "");
         }
     }
 
     // 3. Applications\megu-fastcut.exe
     if let Ok((app_key, _)) = classes.create_subkey(r"Applications\megu-fastcut.exe") {
-        let _ = app_key.set_value("FriendlyAppName", &"Megu FastCut");
+        let _ = set_reg_sz(&app_key, "FriendlyAppName", "Megu FastCut");
         if let Ok((app_cmd, _)) = app_key.create_subkey(r"shell\open\command") {
-            let _ = app_cmd.set_value("", &cmd_str);
+            let _ = set_reg_sz(&app_cmd, "", &cmd_str);
         }
         if let Ok((supp_key, _)) = app_key.create_subkey("SupportedTypes") {
             for ext in VIDEO_EXTENSIONS {
-                let _ = supp_key.set_value(&format!(".{}", ext), &"");
+                let _ = set_reg_sz(&supp_key, &format!(".{}", ext), "");
             }
         }
     }
 
     // 4. SystemFileAssociations\video\OpenWithList\megu-fastcut.exe
     if let Ok((ow_video, _)) = classes.create_subkey(r"SystemFileAssociations\video\OpenWithList\megu-fastcut.exe") {
-        let _ = ow_video.set_value("", &"");
+        let _ = set_reg_sz(&ow_video, "", "");
     }
+
 
     // Notify Windows Explorer to reload association cache
     unsafe {
