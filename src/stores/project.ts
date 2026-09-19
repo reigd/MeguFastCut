@@ -91,7 +91,7 @@ function naturalSort(a: string, b: string): number {
 
 const initialCrop: CropRect = { x: 0, y: 0, width: 1, height: 1 };
 const initialAspect: AspectSetting = { id: 'original', label: 'Original' };
-const initialPadding: PadSetting = { mode: 'blur', blurStrength: 40 };
+const initialPadding: PadSetting = { mode: 'color', color: '#000000', blurStrength: 40 };
 const initialAudio: AudioSettings = {
   trackIndex: 0,
   volumeDb: 0,

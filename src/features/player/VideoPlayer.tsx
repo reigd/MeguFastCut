@@ -30,19 +30,19 @@ export const VideoPlayer: React.FC = () => {
   const bgVideoRef = useRef<HTMLVideoElement>(null);
 
   const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A');
-  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
-    if (!viewportRef.current) return;
+    if (!containerRef.current) return;
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        setViewportSize({
+        setContainerSize({
           width: entry.contentRect.width,
           height: entry.contentRect.height,
         });
       }
     });
-    ro.observe(viewportRef.current);
+    ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, []);
 
@@ -294,6 +294,27 @@ export const VideoPlayer: React.FC = () => {
     srcH
   );
 
+  const hasLetterbox = Math.abs(targetRatio - (srcW / srcH)) > 0.02;
+
+  const viewportDims = useMemo(() => {
+    if (containerSize.width === 0 || containerSize.height === 0) {
+      return { width: '92%', height: 'auto' };
+    }
+    const maxW = containerSize.width * 0.94;
+    const maxH = containerSize.height * 0.94;
+    const containerRatio = maxW / maxH;
+
+    if (containerRatio > targetRatio) {
+      const h = maxH;
+      const w = h * targetRatio;
+      return { width: `${Math.round(w)}px`, height: `${Math.round(h)}px` };
+    } else {
+      const w = maxW;
+      const h = w / targetRatio;
+      return { width: `${Math.round(w)}px`, height: `${Math.round(h)}px` };
+    }
+  }, [containerSize, targetRatio]);
+
   const geometry = useMemo(() => {
     return computeGeometry(
       srcW,
@@ -371,8 +392,8 @@ export const VideoPlayer: React.FC = () => {
         </div>
       )}
 
-      {/* Blurred background when in Fit mode with blur enabled */}
-      {!showOriginalAspect && project.fitMode === 'fit' && project.padding.mode === 'blur' && (
+      {/* Blurred background ONLY when letterboxing actually exists and user opted into blur */}
+      {!showOriginalAspect && project.fitMode === 'fit' && project.padding.mode === 'blur' && hasLetterbox && (
         <div
           style={{
             position: 'absolute',
@@ -395,7 +416,7 @@ export const VideoPlayer: React.FC = () => {
         </div>
       )}
 
-      {/* Aspect Ratio Bounding Viewport with 200ms smooth transition */}
+      {/* Aspect Ratio Bounding Viewport with explicit pixel-perfect sizing */}
       <div
         ref={viewportRef}
         className="preview-viewport"
@@ -404,28 +425,32 @@ export const VideoPlayer: React.FC = () => {
         style={{
           position: 'relative',
           zIndex: 2,
+          width: viewportDims.width,
+          height: viewportDims.height,
           aspectRatio: `${targetRatio}`,
-          maxWidth: '92%',
-          maxHeight: '92%',
+          maxWidth: '94%',
+          maxHeight: '94%',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          background: project.padding.mode === 'color' ? project.padding.color || '#000000' : 'transparent',
-          boxShadow: 'var(--shadow-3)',
+          background: project.padding.mode === 'color' ? project.padding.color || '#000000' : '#000000',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
           borderRadius: 'var(--r-sm)',
           overflow: 'hidden',
-          transition: 'aspect-ratio var(--dur-base) var(--ease-out)',
+          transition: 'width var(--dur-fast) var(--ease-out), height var(--dur-fast) var(--ease-out)',
         }}
       >
         {/* Video Element A */}
         <video
           ref={videoARef}
+          src={activeSlot === 'A' ? currentVideoSrc : ''}
           preload="auto"
           playsInline
           onLoadedMetadata={(e) => {
             if (activeSlot === 'A') {
-              e.currentTarget.currentTime = clipLocalTimeMs / 1000;
-              if (isPlaying) e.currentTarget.play().catch(() => {});
+              const targetSec = clipLocalTimeMsRef.current / 1000;
+              e.currentTarget.currentTime = targetSec;
+              if (isPlayingRef.current) e.currentTarget.play().catch(() => {});
             }
           }}
           onError={(e) => {
@@ -447,12 +472,14 @@ export const VideoPlayer: React.FC = () => {
         {/* Video Element B (Preload buffer for seamless multi-clip cuts) */}
         <video
           ref={videoBRef}
+          src={activeSlot === 'B' ? currentVideoSrc : nextVideoSrc}
           preload="auto"
           playsInline
           onLoadedMetadata={(e) => {
             if (activeSlot === 'B') {
-              e.currentTarget.currentTime = clipLocalTimeMs / 1000;
-              if (isPlaying) e.currentTarget.play().catch(() => {});
+              const targetSec = clipLocalTimeMsRef.current / 1000;
+              e.currentTarget.currentTime = targetSec;
+              if (isPlayingRef.current) e.currentTarget.play().catch(() => {});
             }
           }}
           onError={(e) => {
@@ -473,7 +500,10 @@ export const VideoPlayer: React.FC = () => {
 
         {/* Interactive Crop Overlay */}
         {!showOriginalAspect && project.fitMode === 'crop' && (
-          <CropOverlay width={viewportSize.width} height={viewportSize.height} />
+          <CropOverlay
+            width={parseInt(viewportDims.width, 10) || 800}
+            height={parseInt(viewportDims.height, 10) || 450}
+          />
         )}
       </div>
     </div>
