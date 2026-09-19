@@ -15,6 +15,7 @@ import {
 export const WelcomeScreen: React.FC = () => {
   const { addFiles, recentFiles, removeRecentFile, clearRecentFiles, isLoading, loadingMessage } = useProjectStore();
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
 
   const handleOpenDialog = async () => {
     const paths = await openVideoFileDialog();
@@ -115,9 +116,11 @@ export const WelcomeScreen: React.FC = () => {
         {/* Large Drag & Drop Card */}
         <div
           onClick={handleOpenDialog}
+          onMouseEnter={() => setIsHovered(true)}
+          onMouseLeave={() => setIsHovered(false)}
           style={{
-            background: isDragOver ? 'var(--accent-muted)' : 'var(--bg-surface)',
-            border: `2px dashed ${isDragOver ? 'var(--accent)' : 'var(--border-strong)'}`,
+            background: isDragOver ? 'var(--accent-muted)' : isHovered ? 'var(--bg-elevated)' : 'var(--bg-surface)',
+            border: `1px solid ${isDragOver ? 'var(--accent)' : isHovered ? 'var(--accent)' : 'var(--border-strong)'}`,
             borderRadius: 'var(--r-xl)',
             padding: 'var(--space-8) var(--space-6)',
             display: 'flex',
@@ -126,7 +129,7 @@ export const WelcomeScreen: React.FC = () => {
             justifyContent: 'center',
             textAlign: 'center',
             cursor: 'pointer',
-            boxShadow: 'var(--shadow-2)',
+            boxShadow: isHovered ? 'var(--shadow-3)' : 'var(--shadow-2)',
             transition: 'all var(--dur-fast) var(--ease-out)',
           }}
         >

@@ -133,7 +133,7 @@ export const ClipStrip: React.FC = () => {
             height: '56px',
             minWidth: '84px',
             background: 'var(--bg-elevated)',
-            border: '1px dashed var(--border-strong)',
+            border: '1px solid var(--border-strong)',
             borderRadius: 'var(--r-md)',
             color: 'var(--text-secondary)',
             display: 'flex',
