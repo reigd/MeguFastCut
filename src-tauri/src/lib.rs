@@ -47,7 +47,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|_app| {
-            let _ = context_menu::register_context_menu();
+            if context_menu::is_context_menu_registered() {
+                let _ = context_menu::register_context_menu();
+            }
             Ok(())
         })
         .manage(LaunchState(std::sync::Mutex::new(initial_file)))

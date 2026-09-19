@@ -143,8 +143,8 @@ pub fn unregister_context_menu() -> Result<(), String> {
 pub fn is_context_menu_registered() -> bool {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     if let Ok(cmd_key) = hkcu.open_subkey(r"Software\Classes\SystemFileAssociations\video\shell\MeguFastCut\command") {
-        if let Ok(val) = cmd_key.get_value::<String, _>("") {
-            return !val.is_empty();
+        if let Ok(raw) = cmd_key.get_raw_value("") {
+            return !raw.bytes.is_empty();
         }
     }
     false

@@ -9,7 +9,7 @@ import { Field } from '../../components/Field/Field';
 import { Theme, Locale } from '../../shared/types';
 import { t } from '../../shared/i18n';
 import { CHANGELOG } from '../../shared/changelog';
-import { PaletteIcon, KeyboardIcon, InfoIcon, FolderIcon } from '../../components/icons';
+import { PaletteIcon, KeyboardIcon, InfoIcon, FolderIcon, PlusIcon, TrashIcon } from '../../components/icons';
 import { isContextMenuRegistered, registerContextMenu, unregisterContextMenu } from '../../shared/ipc';
 
 export const SettingsModal: React.FC = () => {
@@ -204,24 +204,60 @@ export const SettingsModal: React.FC = () => {
 
             {/* Context Menu Integration */}
             <Field label={t('settings.context_menu')}>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 'var(--space-2)',
-                  fontSize: 'var(--text-13)',
-                  cursor: 'pointer',
-                  color: 'var(--text-primary)',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={isContextMenuActive}
-                  onChange={(e) => handleToggleContextMenu(e.target.checked)}
-                  style={{ accentColor: 'var(--accent)' }}
-                />
-                <span>{t('settings.context_menu_desc')}</span>
-              </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                <span style={{ fontSize: 'var(--text-12)', color: 'var(--text-secondary)' }}>
+                  {t('settings.context_menu_desc')}
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+                  {isContextMenuActive ? (
+                    <Button
+                      variant="secondary"
+                      onClick={() => handleToggleContextMenu(false)}
+                      style={{
+                        borderColor: 'var(--accent-danger, #ef4444)',
+                        color: 'var(--accent-danger, #ef4444)',
+                      }}
+                    >
+                      <TrashIcon size={14} />
+                      <span>{t('settings.context_menu_remove_btn')}</span>
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="primary"
+                      onClick={() => handleToggleContextMenu(true)}
+                    >
+                      <PlusIcon size={14} />
+                      <span>{t('settings.context_menu_add_btn')}</span>
+                    </Button>
+                  )}
+                  <span
+                    style={{
+                      fontSize: 'var(--text-12)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 'var(--space-2)',
+                      color: isContextMenuActive
+                        ? 'var(--accent-success, #22c55e)'
+                        : 'var(--text-muted, #888888)',
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: '50%',
+                        background: isContextMenuActive
+                          ? 'var(--accent-success, #22c55e)'
+                          : 'var(--text-muted, #888888)',
+                        display: 'inline-block',
+                      }}
+                    />
+                    {isContextMenuActive
+                      ? t('settings.context_menu_status_active')
+                      : t('settings.context_menu_status_inactive')}
+                  </span>
+                </div>
+              </div>
             </Field>
           </div>
         )}
