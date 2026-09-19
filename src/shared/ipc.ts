@@ -185,3 +185,36 @@ export async function finalizeReplace(tempPath: string, originalPath: string): P
   }
 }
 
+export async function getInitialFile(): Promise<string | null> {
+  try {
+    return await invoke<string | null>('get_initial_file');
+  } catch (err) {
+    console.error('Failed to get initial file:', err);
+    return null;
+  }
+}
+
+export async function registerContextMenu(): Promise<void> {
+  try {
+    await invoke('register_context_menu');
+  } catch (err) {
+    throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  }
+}
+
+export async function unregisterContextMenu(): Promise<void> {
+  try {
+    await invoke('unregister_context_menu');
+  } catch (err) {
+    throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  }
+}
+
+export async function isContextMenuRegistered(): Promise<boolean> {
+  try {
+    return await invoke<boolean>('is_context_menu_registered');
+  } catch (err) {
+    console.error('Failed to check context menu registration:', err);
+    return false;
+  }
+}

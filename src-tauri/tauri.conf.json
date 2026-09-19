@@ -60,6 +60,27 @@
     "resources": [
       "binaries/COPYING.GPLv3",
       "binaries/ffmpeg-build.txt"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "mp4",
+          "mkv",
+          "mov",
+          "avi",
+          "webm",
+          "flv",
+          "wmv",
+          "ts",
+          "m4v",
+          "3gp",
+          "m2ts",
+          "mts"
+        ],
+        "name": "Video File",
+        "description": "Video File",
+        "role": "Editor"
+      }
     ]
   }
 }

@@ -140,4 +140,26 @@ pub fn exit_app(app_handle: tauri::AppHandle) {
     std::process::exit(0);
 }
 
+#[tauri::command]
+pub fn get_initial_file(state: tauri::State<'_, crate::LaunchState>) -> Option<String> {
+    if let Ok(mut lock) = state.0.lock() {
+        lock.take()
+    } else {
+        None
+    }
+}
 
+#[tauri::command]
+pub fn register_context_menu() -> Result<(), String> {
+    crate::context_menu::register_context_menu()
+}
+
+#[tauri::command]
+pub fn unregister_context_menu() -> Result<(), String> {
+    crate::context_menu::unregister_context_menu()
+}
+
+#[tauri::command]
+pub fn is_context_menu_registered() -> bool {
+    crate::context_menu::is_context_menu_registered()
+}

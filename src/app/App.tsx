@@ -13,7 +13,9 @@ import { useProjectStore } from '../stores/project';
 import { usePlayerStore } from '../stores/player';
 import { useTimelineStore } from '../stores/timeline';
 import { useUiStore } from '../stores/ui';
-import { openVideoFileDialog } from '../shared/ipc';
+import { useHistoryStore } from '../stores/history';
+import { openVideoFileDialog, getInitialFile } from '../shared/ipc';
+import { listen } from '@tauri-apps/api/event';
 import { subscribeLocale, formatTimecode, t } from '../../src/shared/i18n';
 import { Button } from '../components/Button/Button';
 import { Tooltip } from '../components/Tooltip/Tooltip';
@@ -50,6 +52,47 @@ export const App: React.FC = () => {
   const { setSettingsOpen, setReplaceConfirmOpen, addToast } = useUiStore();
   const { openExportModal } = useExportStore();
 
+  const openExternalFile = React.useCallback(
+    async (filePath: string) => {
+      if (!filePath) return;
+      try {
+        clearProject();
+        useHistoryStore.getState().clearHistory();
+        pause();
+        seek(0);
+        await addFiles([filePath]);
+      } catch (err) {
+        console.error('Failed to open external file:', err);
+      }
+    },
+    [clearProject, pause, seek, addFiles]
+  );
+
+  // Check initial file on cold start (e.g. launched via context menu or CLI argument)
+  useEffect(() => {
+    let isMounted = true;
+    getInitialFile().then((filePath) => {
+      if (isMounted && filePath) {
+        openExternalFile(filePath);
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [openExternalFile]);
+
+  // Listen for file opened while app is already running (single-instance forward)
+  useEffect(() => {
+    const unlistenPromise = listen<string>('open-file', (event) => {
+      if (event.payload) {
+        openExternalFile(event.payload);
+      }
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [openExternalFile]);
+
   const handleReplaceClick = () => {
     if (sources.length !== 1) {
       addToast({
@@ -72,6 +115,7 @@ export const App: React.FC = () => {
     (sum, c) => (c.enabled ? sum + (c.outMs - c.inMs) : sum),
     0
   );
+
 
   // Keyboard navigation & Shortcuts
   useEffect(() => {

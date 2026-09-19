@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useUiStore } from '../../stores/ui';
 import { useSettingsStore } from '../../stores/settings';
 import { Modal } from '../../components/Modal/Modal';
@@ -10,9 +10,10 @@ import { Theme, Locale } from '../../shared/types';
 import { t } from '../../shared/i18n';
 import { CHANGELOG } from '../../shared/changelog';
 import { PaletteIcon, KeyboardIcon, InfoIcon, FolderIcon } from '../../components/icons';
+import { isContextMenuRegistered, registerContextMenu, unregisterContextMenu } from '../../shared/ipc';
 
 export const SettingsModal: React.FC = () => {
-  const { isSettingsOpen, setSettingsOpen } = useUiStore();
+  const { isSettingsOpen, setSettingsOpen, addToast } = useUiStore();
   const {
     theme,
     locale,
@@ -27,6 +28,30 @@ export const SettingsModal: React.FC = () => {
   } = useSettingsStore();
 
   const [activeTab, setActiveTab] = useState<'general' | 'shortcuts' | 'about'>('general');
+  const [isContextMenuActive, setIsContextMenuActive] = useState<boolean>(true);
+
+  useEffect(() => {
+    if (isSettingsOpen) {
+      isContextMenuRegistered().then(setIsContextMenuActive);
+    }
+  }, [isSettingsOpen]);
+
+  const handleToggleContextMenu = async (checked: boolean) => {
+    try {
+      if (checked) {
+        await registerContextMenu();
+        setIsContextMenuActive(true);
+        addToast({ message: t('settings.context_menu_enabled'), durationMs: 3000 });
+      } else {
+        await unregisterContextMenu();
+        setIsContextMenuActive(false);
+        addToast({ message: t('settings.context_menu_disabled'), durationMs: 3000 });
+      }
+    } catch (e) {
+      console.error('Failed to toggle context menu:', e);
+    }
+  };
+
 
   const themeOptions = [
     { value: 'dark', label: t('settings.theme_dark') },
@@ -174,6 +199,28 @@ export const SettingsModal: React.FC = () => {
                   style={{ accentColor: 'var(--accent)' }}
                 />
                 <span>{t('settings.always_confirm_replace')}</span>
+              </label>
+            </Field>
+
+            {/* Context Menu Integration */}
+            <Field label={t('settings.context_menu')}>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 'var(--space-2)',
+                  fontSize: 'var(--text-13)',
+                  cursor: 'pointer',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={isContextMenuActive}
+                  onChange={(e) => handleToggleContextMenu(e.target.checked)}
+                  style={{ accentColor: 'var(--accent)' }}
+                />
+                <span>{t('settings.context_menu_desc')}</span>
               </label>
             </Field>
           </div>
