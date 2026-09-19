@@ -27,6 +27,7 @@ export const VideoPlayer: React.FC = () => {
   const viewportRef = useRef<HTMLDivElement>(null);
   const videoARef = useRef<HTMLVideoElement>(null);
   const videoBRef = useRef<HTMLVideoElement>(null);
+  const bgVideoRef = useRef<HTMLVideoElement>(null);
 
   const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A');
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
@@ -77,11 +78,26 @@ export const VideoPlayer: React.FC = () => {
     };
   }, [project.clips, sources, currentTimeMs]);
 
+  // Synchronized state refs for 60fps playback loop
+  const currentClipRef = useRef(currentClip);
+  currentClipRef.current = currentClip;
+  const nextClipRef = useRef<typeof nextClip>(undefined);
+  const currentClipIndexRef = useRef(currentClipIndex);
+  currentClipIndexRef.current = currentClipIndex;
+  const clipLocalTimeMsRef = useRef(clipLocalTimeMs);
+  clipLocalTimeMsRef.current = clipLocalTimeMs;
+  const projectClipsRef = useRef(project.clips);
+  projectClipsRef.current = project.clips;
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
+  const lastEmittedTimeMsRef = useRef<number>(currentTimeMs);
+
   // Next clip for seamless preloading
   const nextClip = useMemo(() => {
     const clips = project.clips.filter((c) => c.enabled);
     return clips[currentClipIndex + 1];
   }, [project.clips, currentClipIndex]);
+  nextClipRef.current = nextClip;
 
   const nextSource = useMemo(() => {
     if (!nextClip) return undefined;
@@ -122,14 +138,17 @@ export const VideoPlayer: React.FC = () => {
         activeVideo.src = currentVideoSrc;
         activeVideo.setAttribute('data-raw-src', currentVideoSrc);
         activeVideo.load();
-        const targetSec = clipLocalTimeMs / 1000;
+        const targetSec = clipLocalTimeMsRef.current / 1000;
         activeVideo.currentTime = targetSec;
-        if (isPlaying) {
-          activeVideo.play().catch(() => {});
+        if (bgVideoRef.current) {
+          bgVideoRef.current.currentTime = targetSec;
+        }
+        if (isPlayingRef.current) {
+          activeVideo.play().catch((err) => console.error('Active play error after src change:', err));
         }
       }
     }
-  }, [activeVideo, currentVideoSrc, clipLocalTimeMs, isPlaying]);
+  }, [activeVideo, currentVideoSrc]);
 
   // Preload next clip in passive video element
   useEffect(() => {
@@ -144,7 +163,7 @@ export const VideoPlayer: React.FC = () => {
     }
   }, [passiveVideo, nextVideoSrc, nextClip]);
 
-  // Sync playback state
+  // Sync playback play/pause state
   useEffect(() => {
     if (!activeVideo) return;
     const isAudioMuted = isMuted || project.audio.muted;
@@ -153,85 +172,117 @@ export const VideoPlayer: React.FC = () => {
     activeVideo.volume = Math.max(0, Math.min(1, volume * gainLinear));
 
     if (isPlaying) {
-      activeVideo.play().catch(() => pause());
+      activeVideo.play().catch((err) => {
+        console.error('Video play error:', err);
+        pause();
+      });
+      bgVideoRef.current?.play().catch(() => {});
     } else {
       activeVideo.pause();
+      bgVideoRef.current?.pause();
     }
   }, [activeVideo, isPlaying, isMuted, volume, project.audio.muted, project.audio.volumeDb, pause]);
 
-  // Seeking sync
+  // Seeking sync when paused (scrubbing & timeline clicking)
   useEffect(() => {
-    if (!activeVideo) return;
+    if (!activeVideo || isPlaying) return;
     const targetSec = clipLocalTimeMs / 1000;
-    if (Math.abs(activeVideo.currentTime - targetSec) > 0.15) {
+    if (Math.abs(activeVideo.currentTime - targetSec) > 0.03) {
       activeVideo.currentTime = targetSec;
+      if (bgVideoRef.current) {
+        bgVideoRef.current.currentTime = targetSec;
+      }
     }
-  }, [activeVideo, clipLocalTimeMs]);
+  }, [activeVideo, clipLocalTimeMs, isPlaying]);
 
-  // Update current time during playback with requestVideoFrameCallback or timeupdate
+  // External seek during active playback (e.g. user jumped via hotkey or transport button)
   useEffect(() => {
-    if (!activeVideo) return;
+    if (!activeVideo || !isPlaying) return;
+    const diff = Math.abs(currentTimeMs - lastEmittedTimeMsRef.current);
+    if (diff > 400) {
+      const targetSec = clipLocalTimeMs / 1000;
+      activeVideo.currentTime = targetSec;
+      lastEmittedTimeMsRef.current = currentTimeMs;
+      if (bgVideoRef.current) {
+        bgVideoRef.current.currentTime = targetSec;
+      }
+    }
+  }, [activeVideo, currentTimeMs, clipLocalTimeMs, isPlaying]);
 
-    let handle: number;
+  // Smooth 60fps Playback Engine
+  useEffect(() => {
+    if (!activeVideo || !isPlaying) return;
+
+    let animFrameId: number;
     let isSubscribed = true;
 
-    const onFrame = () => {
+    const onTick = () => {
       if (!isSubscribed || !activeVideo) return;
+
+      const currentClip = currentClipRef.current;
+      if (!currentClip) return;
 
       const vidTimeMs = activeVideo.currentTime * 1000;
 
-      // Check if clip boundary reached
-      if (currentClip && vidTimeMs >= currentClip.outMs) {
-        // Transition to next clip seamlessly!
+      // Check if current clip has reached its out point
+      if (vidTimeMs >= currentClip.outMs) {
+        const clips = projectClipsRef.current.filter((c) => c.enabled);
+        const nextIdx = currentClipIndexRef.current + 1;
+        const nextClip = clips[nextIdx];
+
         if (nextClip && passiveVideo) {
-          passiveVideo.play().catch(() => {});
+          // Transition seamlessly to next clip
+          passiveVideo.play().catch((err) => console.error('Passive play error:', err));
           setActiveSlot((prev) => (prev === 'A' ? 'B' : 'A'));
-          seek(currentTimeMs + (currentClip.outMs - clipLocalTimeMs));
+
+          let nextAcc = 0;
+          for (let i = 0; i < nextIdx; i++) {
+            nextAcc += clips[i].outMs - clips[i].inMs;
+          }
+          lastEmittedTimeMsRef.current = nextAcc;
+          seek(nextAcc);
+          return;
         } else {
-          // End of sequence
-          pause();
-          seek(0);
+          // End of timeline reached
+          if (usePlayerStore.getState().isLooping) {
+            activeVideo.currentTime = currentClip.inMs / 1000;
+            activeVideo.play().catch(() => {});
+            lastEmittedTimeMsRef.current = 0;
+            seek(0);
+          } else {
+            pause();
+            seek(0);
+            return;
+          }
         }
       }
 
-      if ('requestVideoFrameCallback' in activeVideo) {
-        handle = (activeVideo as HTMLVideoElement & {
-          requestVideoFrameCallback: (cb: () => void) => number;
-        }).requestVideoFrameCallback(onFrame);
-      }
-    };
-
-    if ('requestVideoFrameCallback' in activeVideo) {
-      handle = (activeVideo as HTMLVideoElement & {
-        requestVideoFrameCallback: (cb: () => void) => number;
-      }).requestVideoFrameCallback(onFrame);
-    }
-
-    const onTimeUpdate = () => {
-      if (!activeVideo || !currentClip) return;
-      const vidTimeMs = activeVideo.currentTime * 1000;
-      // Calculate global time
+      // Compute global timeline position
+      const clips = projectClipsRef.current.filter((c) => c.enabled);
       let accumulated = 0;
-      const clips = project.clips.filter((c) => c.enabled);
-      for (let i = 0; i < currentClipIndex; i++) {
+      for (let i = 0; i < currentClipIndexRef.current && i < clips.length; i++) {
         accumulated += clips[i].outMs - clips[i].inMs;
       }
-      const newGlobalTime = accumulated + (vidTimeMs - currentClip.inMs);
+      const newGlobalTime = accumulated + Math.max(0, vidTimeMs - currentClip.inMs);
+
+      lastEmittedTimeMsRef.current = newGlobalTime;
       seek(newGlobalTime);
+
+      // Keep background blur video in sync if active
+      if (bgVideoRef.current && Math.abs(bgVideoRef.current.currentTime - activeVideo.currentTime) > 0.15) {
+        bgVideoRef.current.currentTime = activeVideo.currentTime;
+      }
+
+      animFrameId = requestAnimationFrame(onTick);
     };
 
-    activeVideo.addEventListener('timeupdate', onTimeUpdate);
+    animFrameId = requestAnimationFrame(onTick);
 
     return () => {
       isSubscribed = false;
-      activeVideo.removeEventListener('timeupdate', onTimeUpdate);
-      if (handle && 'cancelVideoFrameCallback' in activeVideo) {
-        (activeVideo as HTMLVideoElement & {
-          cancelVideoFrameCallback: (id: number) => void;
-        }).cancelVideoFrameCallback(handle);
-      }
+      cancelAnimationFrame(animFrameId);
     };
-  }, [activeVideo, passiveVideo, currentClip, nextClip, currentClipIndex, clipLocalTimeMs, currentTimeMs, project.clips, seek, pause]);
+  }, [activeVideo, passiveVideo, isPlaying, seek, pause]);
 
   // Calculate Geometry & Transforms
   const srcW = currentSource?.probe.video?.width || 1920;
@@ -334,6 +385,7 @@ export const VideoPlayer: React.FC = () => {
           }}
         >
           <video
+            ref={bgVideoRef}
             src={currentVideoSrc}
             preload="auto"
             playsInline
