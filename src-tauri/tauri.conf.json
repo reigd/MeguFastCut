@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Megu FastCut",
         "width": 1400,
         "height": 860,

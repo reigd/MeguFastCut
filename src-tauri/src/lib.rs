@@ -1,3 +1,5 @@
+use tauri::Manager;
+
 pub mod commands;
 pub mod export;
 pub mod ffmpeg;
@@ -9,6 +11,12 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                window.app_handle().exit(0);
+                std::process::exit(0);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::probe_file,
             commands::get_keyframes,
@@ -23,7 +31,8 @@ pub fn run() {
             commands::open_folder,
             commands::check_replace_eligibility,
             commands::generate_replace_temp_path,
-            commands::finalize_replace
+            commands::finalize_replace,
+            commands::exit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running Megu FastCut application");

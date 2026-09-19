@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
 import { useUiStore } from '../stores/ui';
 import { useSettingsStore } from '../stores/settings';
 import { t } from '../shared/i18n';
@@ -25,7 +27,6 @@ export const Titlebar: React.FC<TitlebarProps> = ({
     let unlisten: (() => void) | undefined;
     const initTauriWindow = async () => {
       try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
         const appWindow = getCurrentWindow();
         const max = await appWindow.isMaximized();
         setIsMaximized(max);
@@ -44,30 +45,31 @@ export const Titlebar: React.FC<TitlebarProps> = ({
 
   const handleMinimize = async () => {
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
       await getCurrentWindow().minimize();
-    } catch {
-      // Browser fallback
+    } catch (err) {
+      console.error('Minimize error:', err);
     }
   };
 
   const handleMaximize = async () => {
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
       const appWindow = getCurrentWindow();
       await appWindow.toggleMaximize();
       setIsMaximized(await appWindow.isMaximized());
-    } catch {
-      // Browser fallback
+    } catch (err) {
+      console.error('Maximize error:', err);
     }
   };
 
   const handleClose = async () => {
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      await getCurrentWindow().close();
+      await invoke('exit_app');
     } catch {
-      // Browser fallback
+      try {
+        await getCurrentWindow().destroy();
+      } catch {
+        window.close();
+      }
     }
   };
 

@@ -134,3 +134,10 @@ pub async fn finalize_replace(
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
+#[tauri::command]
+pub fn exit_app(app_handle: tauri::AppHandle) {
+    app_handle.exit(0);
+    std::process::exit(0);
+}
+
+
