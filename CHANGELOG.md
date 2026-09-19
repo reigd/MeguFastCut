@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-09-20
+
+### Added
+- Windows Explorer context menu integration: open and edit any video format directly from right-click.
+- Dynamic "Add Megu FastCut to context menu" and "Remove from context menu" controls in Settings.
+- Single-instance argument passing and cold/warm start video loading.
+
+### Fixed
+- Fixed custom titlebar close button and ensured instant process termination with zero ghost processes in Task Manager.
+- Removed unintended preview blur overlay when displaying videos in original aspect ratio.
+
 ## [1.0.0] - 2026-09-16
 
 ### Added

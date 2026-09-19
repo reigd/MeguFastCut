@@ -20,7 +20,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   const { lastSeenVersion } = useSettingsStore();
   const [isMaximized, setIsMaximized] = useState(false);
 
-  const currentVersion = CHANGELOG[0]?.version || '1.0.0';
+  const currentVersion = CHANGELOG[0]?.version || '1.0.1';
   const hasUnreadWhatsNew = lastSeenVersion !== currentVersion;
 
   useEffect(() => {

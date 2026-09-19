@@ -18,6 +18,48 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.1',
+    date: '2026-09-20',
+    title: {
+      'en-US': 'Megu FastCut 1.0.1 Release',
+      uk: 'Реліз Megu FastCut 1.0.1',
+    },
+    highlight: {
+      'en-US': 'Windows Explorer context menu integration, instant video launching, and window close improvements.',
+      uk: 'Інтеграція в контекстне меню Проводника Windows, миттєвий запуск відео та поліпшення закриття вікна.',
+    },
+    changes: [
+      {
+        kind: 'added',
+        text: {
+          'en-US': 'Windows Explorer context menu integration: open and edit any video format directly from right-click.',
+          uk: 'Інтеграція в контекстне меню Проводника: відкриття та редагування будь-якого відеофайлу по правому кліку.',
+        },
+      },
+      {
+        kind: 'added',
+        text: {
+          'en-US': 'Settings controls to dynamically add or remove context menu integration at any time.',
+          uk: 'Кнопки в налаштуваннях для швидкого додавання або видалення інтеграції з контекстного меню.',
+        },
+      },
+      {
+        kind: 'fixed',
+        text: {
+          'en-US': 'Clean window closing and instant process termination with zero orphaned processes in Task Manager.',
+          uk: 'Коректне закриття вікна та миттєве завершення процесу без залишкових процесів у диспетчері завдань.',
+        },
+      },
+      {
+        kind: 'fixed',
+        text: {
+          'en-US': 'Eliminated unintended preview blur overlay when viewing original video aspect ratios.',
+          uk: 'Виправлено небажане розмиття фону в плеєрі під час перегляду відео в оригінальних пропорціях.',
+        },
+      },
+    ],
+  },
+  {
     version: '1.0.0',
     date: '2026-09-16',
     title: {
