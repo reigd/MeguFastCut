@@ -31,6 +31,7 @@ export const VideoPlayer: React.FC = () => {
 
   const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A');
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const [isResizingCrop, setIsResizingCrop] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -437,7 +438,9 @@ export const VideoPlayer: React.FC = () => {
           boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
           borderRadius: 'var(--r-sm)',
           overflow: 'hidden',
-          transition: 'width var(--dur-fast) var(--ease-out), height var(--dur-fast) var(--ease-out)',
+          transition: isResizingCrop
+            ? 'none'
+            : 'width var(--dur-fast) var(--ease-out), height var(--dur-fast) var(--ease-out)',
         }}
       >
         {/* Video Element A */}
@@ -503,6 +506,9 @@ export const VideoPlayer: React.FC = () => {
           <CropOverlay
             width={parseInt(viewportDims.width, 10) || 800}
             height={parseInt(viewportDims.height, 10) || 450}
+            sourceWidth={srcW}
+            sourceHeight={srcH}
+            onResizeChange={setIsResizingCrop}
           />
         )}
       </div>

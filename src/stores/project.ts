@@ -352,7 +352,25 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   setActiveClipId: (id) => set({ activeClipId: id }),
-  setAspect: (aspect) => set((s) => ({ project: { ...s.project, aspect } })),
+  setAspect: (aspect) => {
+    const activeId = get().activeClipId;
+    const activeClip = get().project.clips.find((c) => c.id === activeId);
+    const source = activeClip ? get().sources.find((s) => s.id === activeClip.sourceId) : get().sources[0];
+    const srcW = source?.probe.video?.width || 1920;
+    const srcH = source?.probe.video?.height || 1080;
+    const targetRatio = resolveAspectRatio(aspect, srcW, srcH);
+    const srcRatio = srcW / srcH;
+
+    let crop: CropRect;
+    if (srcRatio > targetRatio) {
+      const widthRatio = Math.max(0.01, Math.min(1, targetRatio / srcRatio));
+      crop = { x: (1 - widthRatio) / 2, y: 0, width: widthRatio, height: 1 };
+    } else {
+      const heightRatio = Math.max(0.01, Math.min(1, srcRatio / targetRatio));
+      crop = { x: 0, y: (1 - heightRatio) / 2, width: 1, height: heightRatio };
+    }
+    set((s) => ({ project: { ...s.project, aspect, crop } }));
+  },
   setFitMode: (fitMode) => set((s) => ({ project: { ...s.project, fitMode } })),
   setCrop: (crop) => set((s) => ({ project: { ...s.project, crop } })),
   setPadding: (padding) => set((s) => ({ project: { ...s.project, padding } })),

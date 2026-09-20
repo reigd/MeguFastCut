@@ -28,6 +28,11 @@ export const AspectPresets: React.FC = () => {
   const [customW, setCustomW] = useState(currentAspect.customW || 1080);
   const [customH, setCustomH] = useState(currentAspect.customH || 1080);
 
+  React.useEffect(() => {
+    if (currentAspect.customW) setCustomW(currentAspect.customW);
+    if (currentAspect.customH) setCustomH(currentAspect.customH);
+  }, [currentAspect.customW, currentAspect.customH]);
+
   const handleSelectPreset = (p: PresetDef) => {
     const setting: AspectSetting = {
       id: p.id,
