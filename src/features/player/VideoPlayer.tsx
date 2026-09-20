@@ -289,11 +289,12 @@ export const VideoPlayer: React.FC = () => {
   const srcW = currentSource?.probe.video?.width || 1920;
   const srcH = currentSource?.probe.video?.height || 1080;
 
-  const targetRatio = resolveAspectRatio(
-    showOriginalAspect ? { id: 'original' } : project.aspect,
-    srcW,
-    srcH
-  );
+  const targetRatio = useMemo(() => {
+    if (showOriginalAspect || project.fitMode === 'crop') {
+      return srcW > 0 && srcH > 0 ? srcW / srcH : 16 / 9;
+    }
+    return resolveAspectRatio(project.aspect, srcW, srcH);
+  }, [showOriginalAspect, project.fitMode, project.aspect, srcW, srcH]);
 
   const hasLetterbox = Math.abs(targetRatio - (srcW / srcH)) > 0.02;
 
@@ -335,15 +336,6 @@ export const VideoPlayer: React.FC = () => {
   }, [currentClip?.rotate, currentClip?.flipH, currentClip?.flipV]);
 
   const isProxyGenerating = currentSource ? proxyStatus[currentSource.id] === 'generating' : false;
-
-  const objectPosition = useMemo(() => {
-    if (showOriginalAspect || project.fitMode !== 'crop') return 'center';
-    const spanX = 1 - project.crop.width;
-    const spanY = 1 - project.crop.height;
-    const pctX = spanX > 0.001 ? Math.max(0, Math.min(100, (project.crop.x / spanX) * 100)) : 50;
-    const pctY = spanY > 0.001 ? Math.max(0, Math.min(100, (project.crop.y / spanY) * 100)) : 50;
-    return `${pctX.toFixed(2)}% ${pctY.toFixed(2)}%`;
-  }, [showOriginalAspect, project.fitMode, project.crop]);
 
   return (
     <div
@@ -463,8 +455,8 @@ export const VideoPlayer: React.FC = () => {
             position: 'absolute',
             width: project.fitMode === 'stretch' ? '100%' : '100%',
             height: project.fitMode === 'stretch' ? '100%' : '100%',
-            objectFit: project.fitMode === 'stretch' ? 'fill' : project.fitMode === 'crop' ? 'cover' : 'contain',
-            objectPosition,
+            objectFit: project.fitMode === 'stretch' ? 'fill' : 'contain',
+            objectPosition: 'center',
             transform: cssTransform,
             opacity: activeSlot === 'A' ? 1 : 0,
             transition: 'opacity var(--dur-fast) var(--ease-out)',
@@ -492,8 +484,8 @@ export const VideoPlayer: React.FC = () => {
             position: 'absolute',
             width: project.fitMode === 'stretch' ? '100%' : '100%',
             height: project.fitMode === 'stretch' ? '100%' : '100%',
-            objectFit: project.fitMode === 'stretch' ? 'fill' : project.fitMode === 'crop' ? 'cover' : 'contain',
-            objectPosition,
+            objectFit: project.fitMode === 'stretch' ? 'fill' : 'contain',
+            objectPosition: 'center',
             transform: cssTransform,
             opacity: activeSlot === 'B' ? 1 : 0,
             transition: 'opacity var(--dur-fast) var(--ease-out)',

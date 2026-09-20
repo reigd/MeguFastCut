@@ -48,7 +48,7 @@ interface ProjectState {
   removeRecentFile: (path: string) => void;
   clearRecentFiles: () => void;
   setActiveClipId: (id: string | null) => void;
-  setAspect: (aspect: AspectSetting) => void;
+  setAspect: (aspect: AspectSetting, syncCrop?: boolean) => void;
   setFitMode: (mode: FitMode) => void;
   setCrop: (crop: CropRect) => void;
   setPadding: (padding: PadSetting) => void;
@@ -352,7 +352,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   setActiveClipId: (id) => set({ activeClipId: id }),
-  setAspect: (aspect) => {
+  setAspect: (aspect, syncCrop = false) => {
+    if (!syncCrop) {
+      set((s) => ({ project: { ...s.project, aspect } }));
+      return;
+    }
     const activeId = get().activeClipId;
     const activeClip = get().project.clips.find((c) => c.id === activeId);
     const source = activeClip ? get().sources.find((s) => s.id === activeClip.sourceId) : get().sources[0];

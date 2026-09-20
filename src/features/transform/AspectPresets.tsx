@@ -38,7 +38,7 @@ export const AspectPresets: React.FC = () => {
       id: p.id,
       label: p.label,
     };
-    setAspect(setting);
+    setAspect(setting, true);
   };
 
   const handleCustomApply = () => {
@@ -51,7 +51,7 @@ export const AspectPresets: React.FC = () => {
       customH: h,
       ratio: w / h,
     };
-    setAspect(setting);
+    setAspect(setting, true);
   };
 
   return (
@@ -148,7 +148,7 @@ export const AspectPresets: React.FC = () => {
               customH,
               ratio: customW / customH,
             };
-            setAspect(setting);
+            setAspect(setting, true);
           }}
           style={{
             display: 'flex',

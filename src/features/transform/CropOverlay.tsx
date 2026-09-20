@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { useProjectStore } from '../../stores/project';
 import { useHistoryStore } from '../../stores/history';
-import { makeEven, resolveAspectRatio } from '../../shared/geometry';
+import { makeEven } from '../../shared/geometry';
 
 interface CropOverlayProps {
   width: number;
@@ -17,13 +17,12 @@ interface DragSession {
   handle: HandleType;
   startX: number;
   startY: number;
-  startW: number;
-  startH: number;
   startCropX: number;
   startCropY: number;
   startCropW: number;
   startCropH: number;
-  startRatio: number;
+  containerW: number;
+  containerH: number;
   srcW: number;
   srcH: number;
 }
@@ -38,11 +37,11 @@ interface HudState {
 }
 
 const SNAP_PRESETS = [
-  { id: '16:9', label: '16:9', ratio: 16 / 9 },
   { id: '9:16', label: '9:16', ratio: 9 / 16 },
-  { id: '1:1', label: '1:1', ratio: 1.0 },
   { id: '4:5', label: '4:5', ratio: 4 / 5 },
+  { id: '1:1', label: '1:1', ratio: 1.0 },
   { id: '4:3', label: '4:3', ratio: 4 / 3 },
+  { id: '16:9', label: '16:9', ratio: 16 / 9 },
   { id: '21:9', label: '21:9', ratio: 21 / 9 },
 ];
 
@@ -70,26 +69,25 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
 
   const srcW = sourceWidth || 1920;
   const srcH = sourceHeight || 1080;
-  const originalRatio = srcW / srcH;
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>, handle: HandleType) => {
     e.stopPropagation();
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
 
-    const currentRatio = resolveAspectRatio(project.aspect, srcW, srcH);
+    const currentCrop = project.crop;
+    const currentRatio = (currentCrop.width * srcW) / (currentCrop.height * srcH);
 
     sessionRef.current = {
       handle,
       startX: e.clientX,
       startY: e.clientY,
-      startW: width,
-      startH: height,
-      startCropX: crop.x,
-      startCropY: crop.y,
-      startCropW: crop.width,
-      startCropH: crop.height,
-      startRatio: currentRatio,
+      startCropX: currentCrop.x,
+      startCropY: currentCrop.y,
+      startCropW: currentCrop.width,
+      startCropH: currentCrop.height,
+      containerW: width,
+      containerH: height,
       srcW,
       srcH,
     };
@@ -103,149 +101,217 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
         label: project.aspect.label || `${currentRatio.toFixed(2)}:1`,
         ratio: currentRatio,
         snapped: project.aspect.id !== 'custom',
-        width: Math.round(srcH * currentRatio),
-        height: srcH,
+        width: Math.round(srcW * currentCrop.width),
+        height: Math.round(srcH * currentCrop.height),
       });
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const session = sessionRef.current;
-    if (!session || width <= 0 || height <= 0) return;
+    if (!session || session.containerW <= 0 || session.containerH <= 0) return;
+
+    // Normalised delta (0..1) relative to container dimensions
+    const dx = (e.clientX - session.startX) / session.containerW;
+    const dy = (e.clientY - session.startY) / session.containerH;
+
+    let newX = session.startCropX;
+    let newY = session.startCropY;
+    let newW = session.startCropW;
+    let newH = session.startCropH;
 
     if (session.handle === 'move') {
-      // Panning video inside crop frame
-      const currentCrop = project.crop;
-      const srcRatio = session.srcW / session.srcH;
-      const viewportRatio = width / height;
-
-      let renderedVideoW = width;
-      let renderedVideoH = height;
-      if (srcRatio > viewportRatio) {
-        renderedVideoH = height;
-        renderedVideoW = height * srcRatio;
-      } else {
-        renderedVideoW = width;
-        renderedVideoH = width / srcRatio;
-      }
-
-      // Delta in source video fraction
-      const deltaX = (e.clientX - session.startX) / renderedVideoW;
-      const deltaY = (e.clientY - session.startY) / renderedVideoH;
-
-      const maxX = Math.max(0, 1 - session.startCropW);
-      const maxY = Math.max(0, 1 - session.startCropH);
-
-      // Mouse drag to right shifts crop box left (revealing left content)
-      const newX = Math.max(0, Math.min(maxX, session.startCropX - deltaX));
-      const newY = Math.max(0, Math.min(maxY, session.startCropY - deltaY));
-
+      newX = Math.max(0, Math.min(1 - session.startCropW, session.startCropX + dx));
+      newY = Math.max(0, Math.min(1 - session.startCropH, session.startCropY + dy));
       setCrop({
-        ...currentCrop,
         x: newX,
         y: newY,
+        width: session.startCropW,
+        height: session.startCropH,
       });
       return;
     }
 
-    // Handle resizing proportions (aspect ratio)
-    const dx = e.clientX - session.startX;
-    const dy = e.clientY - session.startY;
-
-    let targetW = session.startW;
-    let targetH = session.startH;
-
     switch (session.handle) {
-      case 'e':
-        targetW = session.startW + 2 * dx;
+      case 'e': {
+        // Only change width (right edge)
+        newW = Math.max(0.04, Math.min(1 - session.startCropX, session.startCropW + dx));
         break;
-      case 'w':
-        targetW = session.startW - 2 * dx;
-        break;
-      case 's':
-        targetH = session.startH + 2 * dy;
-        break;
-      case 'n':
-        targetH = session.startH - 2 * dy;
-        break;
-      case 'se':
-        targetW = session.startW + 2 * dx;
-        targetH = session.startH + 2 * dy;
-        break;
-      case 'sw':
-        targetW = session.startW - 2 * dx;
-        targetH = session.startH + 2 * dy;
-        break;
-      case 'ne':
-        targetW = session.startW + 2 * dx;
-        targetH = session.startH - 2 * dy;
-        break;
-      case 'nw':
-        targetW = session.startW - 2 * dx;
-        targetH = session.startH - 2 * dy;
-        break;
-    }
-
-    targetW = Math.max(80, targetW);
-    targetH = Math.max(80, targetH);
-
-    let newRatio: number;
-    if (e.shiftKey) {
-      newRatio = session.startRatio;
-    } else {
-      newRatio = targetW / targetH;
-    }
-
-    newRatio = Math.max(0.2, Math.min(5.0, newRatio));
-
-    // Preset snapping check (within 3.5% threshold)
-    let snapped = false;
-    let activePresetId = 'custom';
-    let activePresetLabel = `${newRatio.toFixed(2)}:1`;
-
-    if (Math.abs(newRatio - originalRatio) / originalRatio < 0.035) {
-      newRatio = originalRatio;
-      snapped = true;
-      activePresetId = 'original';
-      activePresetLabel = 'Original';
-    } else {
-      for (const preset of SNAP_PRESETS) {
-        if (Math.abs(newRatio - preset.ratio) / preset.ratio < 0.035) {
-          newRatio = preset.ratio;
-          snapped = true;
-          activePresetId = preset.id;
-          activePresetLabel = preset.label;
-          break;
+      }
+      case 'w': {
+        // Only change x and width (left edge)
+        const proposedX = session.startCropX + dx;
+        const proposedW = session.startCropW - dx;
+        if (proposedX < 0) {
+          newX = 0;
+          newW = session.startCropX + session.startCropW;
+        } else if (proposedW < 0.04) {
+          newX = session.startCropX + session.startCropW - 0.04;
+          newW = 0.04;
+        } else {
+          newX = proposedX;
+          newW = proposedW;
         }
+        break;
+      }
+      case 's': {
+        // Only change height (bottom edge)
+        newH = Math.max(0.04, Math.min(1 - session.startCropY, session.startCropH + dy));
+        break;
+      }
+      case 'n': {
+        // Only change y and height (top edge)
+        const proposedY = session.startCropY + dy;
+        const proposedH = session.startCropH - dy;
+        if (proposedY < 0) {
+          newY = 0;
+          newH = session.startCropY + session.startCropH;
+        } else if (proposedH < 0.04) {
+          newY = session.startCropY + session.startCropH - 0.04;
+          newH = 0.04;
+        } else {
+          newY = proposedY;
+          newH = proposedH;
+        }
+        break;
+      }
+      case 'se': {
+        newW = Math.max(0.04, Math.min(1 - session.startCropX, session.startCropW + dx));
+        newH = Math.max(0.04, Math.min(1 - session.startCropY, session.startCropH + dy));
+        break;
+      }
+      case 'sw': {
+        const proposedX = session.startCropX + dx;
+        const proposedW = session.startCropW - dx;
+        if (proposedX < 0) {
+          newX = 0;
+          newW = session.startCropX + session.startCropW;
+        } else if (proposedW < 0.04) {
+          newX = session.startCropX + session.startCropW - 0.04;
+          newW = 0.04;
+        } else {
+          newX = proposedX;
+          newW = proposedW;
+        }
+        newH = Math.max(0.04, Math.min(1 - session.startCropY, session.startCropH + dy));
+        break;
+      }
+      case 'ne': {
+        newW = Math.max(0.04, Math.min(1 - session.startCropX, session.startCropW + dx));
+        const proposedY = session.startCropY + dy;
+        const proposedH = session.startCropH - dy;
+        if (proposedY < 0) {
+          newY = 0;
+          newH = session.startCropY + session.startCropH;
+        } else if (proposedH < 0.04) {
+          newY = session.startCropY + session.startCropH - 0.04;
+          newH = 0.04;
+        } else {
+          newY = proposedY;
+          newH = proposedH;
+        }
+        break;
+      }
+      case 'nw': {
+        const proposedX = session.startCropX + dx;
+        const proposedW = session.startCropW - dx;
+        if (proposedX < 0) {
+          newX = 0;
+          newW = session.startCropX + session.startCropW;
+        } else if (proposedW < 0.04) {
+          newX = session.startCropX + session.startCropW - 0.04;
+          newW = 0.04;
+        } else {
+          newX = proposedX;
+          newW = proposedW;
+        }
+        const proposedY = session.startCropY + dy;
+        const proposedH = session.startCropH - dy;
+        if (proposedY < 0) {
+          newY = 0;
+          newH = session.startCropY + session.startCropH;
+        } else if (proposedH < 0.04) {
+          newY = session.startCropY + session.startCropH - 0.04;
+          newH = 0.04;
+        } else {
+          newY = proposedY;
+          newH = proposedH;
+        }
+        break;
       }
     }
 
-    const calcW = newRatio >= 1 ? makeEven(Math.round(session.srcH * newRatio)) : makeEven(session.srcW);
-    const calcH = newRatio >= 1 ? makeEven(session.srcH) : makeEven(Math.round(session.srcW / newRatio));
+    // Shift key locks the initial aspect ratio
+    if (e.shiftKey) {
+      const initialRatio = (session.startCropW * session.srcW) / (session.startCropH * session.srcH);
+      if (session.handle === 'e' || session.handle === 'w') {
+        newH = Math.min(1 - newY, (newW * session.srcW) / (initialRatio * session.srcH));
+      } else {
+        newW = Math.min(1 - newX, (initialRatio * newH * session.srcH) / session.srcW);
+      }
+    }
+
+    let currentRatio = (newW * session.srcW) / (newH * session.srcH);
+    let snapped = false;
+    let activePresetId = 'custom';
+    let activePresetLabel = `${currentRatio.toFixed(2)}:1`;
+
+    // Snap to standard presets
+    for (const preset of SNAP_PRESETS) {
+      if (Math.abs(currentRatio - preset.ratio) / preset.ratio < 0.035) {
+        currentRatio = preset.ratio;
+        snapped = true;
+        activePresetId = preset.id;
+        activePresetLabel = preset.label;
+
+        if (session.handle === 'e' || session.handle === 'w') {
+          const snappedW = (preset.ratio * newH * session.srcH) / session.srcW;
+          if (newX + snappedW <= 1) {
+            newW = snappedW;
+          }
+        } else if (session.handle === 's' || session.handle === 'n') {
+          const snappedH = (newW * session.srcW) / (preset.ratio * session.srcH);
+          if (newY + snappedH <= 1) {
+            newH = snappedH;
+          }
+        }
+        break;
+      }
+    }
+
+    const pixelW = makeEven(Math.round(newW * session.srcW));
+    const pixelH = makeEven(Math.round(newH * session.srcH));
+
+    setCrop({
+      x: newX,
+      y: newY,
+      width: newW,
+      height: newH,
+    });
 
     if (snapped) {
       setAspect({
         id: activePresetId,
         label: activePresetLabel,
-        ratio: newRatio,
-      });
+        ratio: currentRatio,
+      }, false);
     } else {
       setAspect({
         id: 'custom',
-        label: `${calcW}:${calcH}`,
-        customW: calcW,
-        customH: calcH,
-        ratio: newRatio,
-      });
+        label: `${pixelW}:${pixelH}`,
+        customW: pixelW,
+        customH: pixelH,
+        ratio: currentRatio,
+      }, false);
     }
 
     setHudInfo({
       visible: true,
       label: activePresetLabel,
-      ratio: newRatio,
+      ratio: currentRatio,
       snapped,
-      width: calcW,
-      height: calcH,
+      width: pixelW,
+      height: pixelH,
     });
   };
 
@@ -273,31 +339,46 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
 
   return (
     <div
-      onPointerDown={(e) => handlePointerDown(e, 'move')}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onPointerDown={(e) => {
+        // Clicking on the dimmed area centers the crop box at that position
+        if (e.target !== e.currentTarget) return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const clickX = (e.clientX - rect.left) / rect.width;
+        const clickY = (e.clientY - rect.top) / rect.height;
+        const newX = Math.max(0, Math.min(1 - crop.width, clickX - crop.width / 2));
+        const newY = Math.max(0, Math.min(1 - crop.height, clickY - crop.height / 2));
+        setCrop({ ...crop, x: newX, y: newY });
+      }}
       style={{
         position: 'absolute',
         inset: 0,
         zIndex: 20,
-        cursor: activeHandle === 'move' ? 'grabbing' : 'grab',
         pointerEvents: 'auto',
         userSelect: 'none',
+        overflow: 'hidden',
       }}
     >
-      {/* Rule-of-Thirds Grid Overlay */}
+      {/* Active Crop Box with dark outer dimming shadow */}
       <div
+        onPointerDown={(e) => handleHandleDown(e, 'move')}
         style={{
           position: 'absolute',
-          inset: 0,
+          left: `${crop.x * 100}%`,
+          top: `${crop.y * 100}%`,
+          width: `${crop.width * 100}%`,
+          height: `${crop.height * 100}%`,
           border: '1.5px solid var(--accent)',
-          borderRadius: 'var(--r-sm)',
-          boxShadow: '0 0 0 9999px var(--crop-overlay)',
-          pointerEvents: 'none',
+          borderRadius: '2px',
+          boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.65)',
+          cursor: activeHandle === 'move' ? 'grabbing' : 'grab',
+          pointerEvents: 'auto',
+          boxSizing: 'border-box',
         }}
       >
-        {/* Horizontal Thirds Lines */}
+        {/* Rule-of-Thirds Grid */}
         <div
           style={{
             position: 'absolute',
@@ -306,6 +387,7 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             right: 0,
             height: '1px',
             background: 'var(--crop-guide)',
+            pointerEvents: 'none',
           }}
         />
         <div
@@ -316,10 +398,9 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             right: 0,
             height: '1px',
             background: 'var(--crop-guide)',
+            pointerEvents: 'none',
           }}
         />
-
-        {/* Vertical Thirds Lines */}
         <div
           style={{
             position: 'absolute',
@@ -328,6 +409,7 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             bottom: 0,
             width: '1px',
             background: 'var(--crop-guide)',
+            pointerEvents: 'none',
           }}
         />
         <div
@@ -338,8 +420,267 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             bottom: 0,
             width: '1px',
             background: 'var(--crop-guide)',
+            pointerEvents: 'none',
           }}
         />
+
+        {/* 4 Corner Handles */}
+        {/* Top-Left */}
+        <div
+          onPointerDown={(e) => handleHandleDown(e, 'nw')}
+          onMouseEnter={() => setHoveredHandle('nw')}
+          onMouseLeave={() => setHoveredHandle(null)}
+          style={{
+            position: 'absolute',
+            top: '-12px',
+            left: '-12px',
+            width: '28px',
+            height: '28px',
+            cursor: 'nwse-resize',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 30,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              width: '14px',
+              height: '14px',
+              borderTop: `3.5px solid ${activeHandle === 'nw' || hoveredHandle === 'nw' ? 'var(--accent)' : 'var(--handle)'}`,
+              borderLeft: `3.5px solid ${activeHandle === 'nw' || hoveredHandle === 'nw' ? 'var(--accent)' : 'var(--handle)'}`,
+              filter: activeHandle === 'nw' || hoveredHandle === 'nw' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
+              transition: 'border-color 0.15s ease, filter 0.15s ease',
+              borderRadius: '1px',
+            }}
+          />
+        </div>
+
+        {/* Top-Right */}
+        <div
+          onPointerDown={(e) => handleHandleDown(e, 'ne')}
+          onMouseEnter={() => setHoveredHandle('ne')}
+          onMouseLeave={() => setHoveredHandle(null)}
+          style={{
+            position: 'absolute',
+            top: '-12px',
+            right: '-12px',
+            width: '28px',
+            height: '28px',
+            cursor: 'nesw-resize',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 30,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              width: '14px',
+              height: '14px',
+              borderTop: `3.5px solid ${activeHandle === 'ne' || hoveredHandle === 'ne' ? 'var(--accent)' : 'var(--handle)'}`,
+              borderRight: `3.5px solid ${activeHandle === 'ne' || hoveredHandle === 'ne' ? 'var(--accent)' : 'var(--handle)'}`,
+              filter: activeHandle === 'ne' || hoveredHandle === 'ne' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
+              transition: 'border-color 0.15s ease, filter 0.15s ease',
+              borderRadius: '1px',
+            }}
+          />
+        </div>
+
+        {/* Bottom-Left */}
+        <div
+          onPointerDown={(e) => handleHandleDown(e, 'sw')}
+          onMouseEnter={() => setHoveredHandle('sw')}
+          onMouseLeave={() => setHoveredHandle(null)}
+          style={{
+            position: 'absolute',
+            bottom: '-12px',
+            left: '-12px',
+            width: '28px',
+            height: '28px',
+            cursor: 'nesw-resize',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 30,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              width: '14px',
+              height: '14px',
+              borderBottom: `3.5px solid ${activeHandle === 'sw' || hoveredHandle === 'sw' ? 'var(--accent)' : 'var(--handle)'}`,
+              borderLeft: `3.5px solid ${activeHandle === 'sw' || hoveredHandle === 'sw' ? 'var(--accent)' : 'var(--handle)'}`,
+              filter: activeHandle === 'sw' || hoveredHandle === 'sw' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
+              transition: 'border-color 0.15s ease, filter 0.15s ease',
+              borderRadius: '1px',
+            }}
+          />
+        </div>
+
+        {/* Bottom-Right */}
+        <div
+          onPointerDown={(e) => handleHandleDown(e, 'se')}
+          onMouseEnter={() => setHoveredHandle('se')}
+          onMouseLeave={() => setHoveredHandle(null)}
+          style={{
+            position: 'absolute',
+            bottom: '-12px',
+            right: '-12px',
+            width: '28px',
+            height: '28px',
+            cursor: 'nwse-resize',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 30,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              width: '14px',
+              height: '14px',
+              borderBottom: `3.5px solid ${activeHandle === 'se' || hoveredHandle === 'se' ? 'var(--accent)' : 'var(--handle)'}`,
+              borderRight: `3.5px solid ${activeHandle === 'se' || hoveredHandle === 'se' ? 'var(--accent)' : 'var(--handle)'}`,
+              filter: activeHandle === 'se' || hoveredHandle === 'se' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
+              transition: 'border-color 0.15s ease, filter 0.15s ease',
+              borderRadius: '1px',
+            }}
+          />
+        </div>
+
+        {/* 4 Edge Handles */}
+        {/* Top Edge */}
+        <div
+          onPointerDown={(e) => handleHandleDown(e, 'n')}
+          onMouseEnter={() => setHoveredHandle('n')}
+          onMouseLeave={() => setHoveredHandle(null)}
+          style={{
+            position: 'absolute',
+            top: '-10px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: '56px',
+            height: '20px',
+            cursor: 'ns-resize',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 28,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              width: '32px',
+              height: '4px',
+              borderRadius: 'var(--r-full)',
+              background: activeHandle === 'n' || hoveredHandle === 'n' ? 'var(--accent)' : 'var(--handle)',
+              boxShadow: activeHandle === 'n' || hoveredHandle === 'n' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
+              transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
+            }}
+          />
+        </div>
+
+        {/* Bottom Edge */}
+        <div
+          onPointerDown={(e) => handleHandleDown(e, 's')}
+          onMouseEnter={() => setHoveredHandle('s')}
+          onMouseLeave={() => setHoveredHandle(null)}
+          style={{
+            position: 'absolute',
+            bottom: '-10px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: '56px',
+            height: '20px',
+            cursor: 'ns-resize',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 28,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              width: '32px',
+              height: '4px',
+              borderRadius: 'var(--r-full)',
+              background: activeHandle === 's' || hoveredHandle === 's' ? 'var(--accent)' : 'var(--handle)',
+              boxShadow: activeHandle === 's' || hoveredHandle === 's' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
+              transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
+            }}
+          />
+        </div>
+
+        {/* Left Edge */}
+        <div
+          onPointerDown={(e) => handleHandleDown(e, 'w')}
+          onMouseEnter={() => setHoveredHandle('w')}
+          onMouseLeave={() => setHoveredHandle(null)}
+          style={{
+            position: 'absolute',
+            left: '-10px',
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: '20px',
+            height: '56px',
+            cursor: 'ew-resize',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 28,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              width: '4px',
+              height: '32px',
+              borderRadius: 'var(--r-full)',
+              background: activeHandle === 'w' || hoveredHandle === 'w' ? 'var(--accent)' : 'var(--handle)',
+              boxShadow: activeHandle === 'w' || hoveredHandle === 'w' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
+              transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
+            }}
+          />
+        </div>
+
+        {/* Right Edge */}
+        <div
+          onPointerDown={(e) => handleHandleDown(e, 'e')}
+          onMouseEnter={() => setHoveredHandle('e')}
+          onMouseLeave={() => setHoveredHandle(null)}
+          style={{
+            position: 'absolute',
+            right: '-10px',
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: '20px',
+            height: '56px',
+            cursor: 'ew-resize',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 28,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              width: '4px',
+              height: '32px',
+              borderRadius: 'var(--r-full)',
+              background: activeHandle === 'e' || hoveredHandle === 'e' ? 'var(--accent)' : 'var(--handle)',
+              boxShadow: activeHandle === 'e' || hoveredHandle === 'e' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
+              transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
+            }}
+          />
+        </div>
       </div>
 
       {/* Floating HUD Tooltip */}
@@ -388,264 +729,6 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
           )}
         </div>
       )}
-
-      {/* 4 Interactive Corner Handles */}
-      {/* Top-Left */}
-      <div
-        onPointerDown={(e) => handleHandleDown(e, 'nw')}
-        onMouseEnter={() => setHoveredHandle('nw')}
-        onMouseLeave={() => setHoveredHandle(null)}
-        style={{
-          position: 'absolute',
-          top: '-12px',
-          left: '-12px',
-          width: '28px',
-          height: '28px',
-          cursor: 'nwse-resize',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 30,
-          pointerEvents: 'auto',
-        }}
-      >
-        <div
-          style={{
-            width: '14px',
-            height: '14px',
-            borderTop: `3.5px solid ${activeHandle === 'nw' || hoveredHandle === 'nw' ? 'var(--accent)' : 'var(--handle)'}`,
-            borderLeft: `3.5px solid ${activeHandle === 'nw' || hoveredHandle === 'nw' ? 'var(--accent)' : 'var(--handle)'}`,
-            filter: activeHandle === 'nw' || hoveredHandle === 'nw' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
-            transition: 'border-color 0.15s ease, filter 0.15s ease',
-            borderRadius: '1px',
-          }}
-        />
-      </div>
-
-      {/* Top-Right */}
-      <div
-        onPointerDown={(e) => handleHandleDown(e, 'ne')}
-        onMouseEnter={() => setHoveredHandle('ne')}
-        onMouseLeave={() => setHoveredHandle(null)}
-        style={{
-          position: 'absolute',
-          top: '-12px',
-          right: '-12px',
-          width: '28px',
-          height: '28px',
-          cursor: 'nesw-resize',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 30,
-          pointerEvents: 'auto',
-        }}
-      >
-        <div
-          style={{
-            width: '14px',
-            height: '14px',
-            borderTop: `3.5px solid ${activeHandle === 'ne' || hoveredHandle === 'ne' ? 'var(--accent)' : 'var(--handle)'}`,
-            borderRight: `3.5px solid ${activeHandle === 'ne' || hoveredHandle === 'ne' ? 'var(--accent)' : 'var(--handle)'}`,
-            filter: activeHandle === 'ne' || hoveredHandle === 'ne' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
-            transition: 'border-color 0.15s ease, filter 0.15s ease',
-            borderRadius: '1px',
-          }}
-        />
-      </div>
-
-      {/* Bottom-Left */}
-      <div
-        onPointerDown={(e) => handleHandleDown(e, 'sw')}
-        onMouseEnter={() => setHoveredHandle('sw')}
-        onMouseLeave={() => setHoveredHandle(null)}
-        style={{
-          position: 'absolute',
-          bottom: '-12px',
-          left: '-12px',
-          width: '28px',
-          height: '28px',
-          cursor: 'nesw-resize',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 30,
-          pointerEvents: 'auto',
-        }}
-      >
-        <div
-          style={{
-            width: '14px',
-            height: '14px',
-            borderBottom: `3.5px solid ${activeHandle === 'sw' || hoveredHandle === 'sw' ? 'var(--accent)' : 'var(--handle)'}`,
-            borderLeft: `3.5px solid ${activeHandle === 'sw' || hoveredHandle === 'sw' ? 'var(--accent)' : 'var(--handle)'}`,
-            filter: activeHandle === 'sw' || hoveredHandle === 'sw' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
-            transition: 'border-color 0.15s ease, filter 0.15s ease',
-            borderRadius: '1px',
-          }}
-        />
-      </div>
-
-      {/* Bottom-Right */}
-      <div
-        onPointerDown={(e) => handleHandleDown(e, 'se')}
-        onMouseEnter={() => setHoveredHandle('se')}
-        onMouseLeave={() => setHoveredHandle(null)}
-        style={{
-          position: 'absolute',
-          bottom: '-12px',
-          right: '-12px',
-          width: '28px',
-          height: '28px',
-          cursor: 'nwse-resize',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 30,
-          pointerEvents: 'auto',
-        }}
-      >
-        <div
-          style={{
-            width: '14px',
-            height: '14px',
-            borderBottom: `3.5px solid ${activeHandle === 'se' || hoveredHandle === 'se' ? 'var(--accent)' : 'var(--handle)'}`,
-            borderRight: `3.5px solid ${activeHandle === 'se' || hoveredHandle === 'se' ? 'var(--accent)' : 'var(--handle)'}`,
-            filter: activeHandle === 'se' || hoveredHandle === 'se' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
-            transition: 'border-color 0.15s ease, filter 0.15s ease',
-            borderRadius: '1px',
-          }}
-        />
-      </div>
-
-      {/* 4 Interactive Edge Handles */}
-      {/* Top Edge */}
-      <div
-        onPointerDown={(e) => handleHandleDown(e, 'n')}
-        onMouseEnter={() => setHoveredHandle('n')}
-        onMouseLeave={() => setHoveredHandle(null)}
-        style={{
-          position: 'absolute',
-          top: '-10px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          width: '56px',
-          height: '20px',
-          cursor: 'ns-resize',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 28,
-          pointerEvents: 'auto',
-        }}
-      >
-        <div
-          style={{
-            width: '32px',
-            height: '4px',
-            borderRadius: 'var(--r-full)',
-            background: activeHandle === 'n' || hoveredHandle === 'n' ? 'var(--accent)' : 'var(--handle)',
-            boxShadow: activeHandle === 'n' || hoveredHandle === 'n' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
-            transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-          }}
-        />
-      </div>
-
-      {/* Bottom Edge */}
-      <div
-        onPointerDown={(e) => handleHandleDown(e, 's')}
-        onMouseEnter={() => setHoveredHandle('s')}
-        onMouseLeave={() => setHoveredHandle(null)}
-        style={{
-          position: 'absolute',
-          bottom: '-10px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          width: '56px',
-          height: '20px',
-          cursor: 'ns-resize',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 28,
-          pointerEvents: 'auto',
-        }}
-      >
-        <div
-          style={{
-            width: '32px',
-            height: '4px',
-            borderRadius: 'var(--r-full)',
-            background: activeHandle === 's' || hoveredHandle === 's' ? 'var(--accent)' : 'var(--handle)',
-            boxShadow: activeHandle === 's' || hoveredHandle === 's' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
-            transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-          }}
-        />
-      </div>
-
-      {/* Left Edge */}
-      <div
-        onPointerDown={(e) => handleHandleDown(e, 'w')}
-        onMouseEnter={() => setHoveredHandle('w')}
-        onMouseLeave={() => setHoveredHandle(null)}
-        style={{
-          position: 'absolute',
-          left: '-10px',
-          top: '50%',
-          transform: 'translateY(-50%)',
-          width: '20px',
-          height: '56px',
-          cursor: 'ew-resize',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 28,
-          pointerEvents: 'auto',
-        }}
-      >
-        <div
-          style={{
-            width: '4px',
-            height: '32px',
-            borderRadius: 'var(--r-full)',
-            background: activeHandle === 'w' || hoveredHandle === 'w' ? 'var(--accent)' : 'var(--handle)',
-            boxShadow: activeHandle === 'w' || hoveredHandle === 'w' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
-            transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-          }}
-        />
-      </div>
-
-      {/* Right Edge */}
-      <div
-        onPointerDown={(e) => handleHandleDown(e, 'e')}
-        onMouseEnter={() => setHoveredHandle('e')}
-        onMouseLeave={() => setHoveredHandle(null)}
-        style={{
-          position: 'absolute',
-          right: '-10px',
-          top: '50%',
-          transform: 'translateY(-50%)',
-          width: '20px',
-          height: '56px',
-          cursor: 'ew-resize',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 28,
-          pointerEvents: 'auto',
-        }}
-      >
-        <div
-          style={{
-            width: '4px',
-            height: '32px',
-            borderRadius: 'var(--r-full)',
-            background: activeHandle === 'e' || hoveredHandle === 'e' ? 'var(--accent)' : 'var(--handle)',
-            boxShadow: activeHandle === 'e' || hoveredHandle === 'e' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
-            transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-          }}
-        />
-      </div>
     </div>
   );
 };
