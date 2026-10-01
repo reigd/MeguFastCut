@@ -136,71 +136,75 @@ export const App: React.FC = () => {
         return;
       }
 
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+      const isKey = (code: string, keyChar?: string) =>
+        e.code === code || (keyChar ? e.key.toLowerCase() === keyChar.toLowerCase() : false);
+      const isCmdOrCtrl = e.ctrlKey || e.metaKey;
+
+      if (isCmdOrCtrl && isKey('KeyZ', 'z') && !e.shiftKey) {
         e.preventDefault();
         undo();
       } else if (
-        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && e.shiftKey) ||
-        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y')
+        (isCmdOrCtrl && isKey('KeyZ', 'z') && e.shiftKey) ||
+        (isCmdOrCtrl && isKey('KeyY', 'y'))
       ) {
         e.preventDefault();
         redo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+      } else if (isCmdOrCtrl && isKey('KeyN', 'n')) {
         e.preventDefault();
         createProject();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
+      } else if (isCmdOrCtrl && isKey('KeyO', 'o')) {
         e.preventDefault();
         const paths = await openVideoFileDialog();
         if (paths && paths.length > 0) {
           await addFiles(paths);
         }
-      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
+      } else if (isCmdOrCtrl && e.shiftKey && isKey('KeyS', 's')) {
         e.preventDefault();
         if (project.clips.length > 0) {
           handleReplaceClick();
         }
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') {
+      } else if (isCmdOrCtrl && isKey('KeyE', 'e')) {
         e.preventDefault();
         if (project.clips.length > 0) {
           openExportModal();
         }
-      } else if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+      } else if (isCmdOrCtrl && (e.code === 'Comma' || e.key === ',')) {
         e.preventDefault();
         setSettingsOpen(true);
-      } else if (e.code === 'Space') {
+      } else if (e.code === 'Space' || e.key === ' ') {
         e.preventDefault();
         togglePlay();
-      } else if (e.key.toLowerCase() === 'k') {
+      } else if (isKey('KeyK', 'k')) {
         e.preventDefault();
         pause();
-      } else if (e.key.toLowerCase() === 'j') {
+      } else if (isKey('KeyJ', 'j')) {
         e.preventDefault();
         skipSeconds(-10);
-      } else if (e.key.toLowerCase() === 'l') {
+      } else if (isKey('KeyL', 'l')) {
         e.preventDefault();
         skipSeconds(10);
-      } else if (e.key === 'ArrowLeft') {
+      } else if (e.code === 'ArrowLeft' || e.key === 'ArrowLeft') {
         e.preventDefault();
         if (e.shiftKey) skipSeconds(-1);
         else stepFrame(-1);
-      } else if (e.key === 'ArrowRight') {
+      } else if (e.code === 'ArrowRight' || e.key === 'ArrowRight') {
         e.preventDefault();
         if (e.shiftKey) skipSeconds(1);
         else stepFrame(1);
-      } else if (e.key === 'Home') {
+      } else if (e.code === 'Home' || e.key === 'Home') {
         e.preventDefault();
         seek(0);
-      } else if (e.key === 'End') {
+      } else if (e.code === 'End' || e.key === 'End') {
         e.preventDefault();
         const total = project.clips.reduce(
           (sum, c) => (c.enabled ? sum + Math.round((c.outMs - c.inMs) / (c.speed || 1.0)) : sum),
           0
         );
         seek(total);
-      } else if (e.key.toLowerCase() === 'f') {
+      } else if (isKey('KeyF', 'f')) {
         e.preventDefault();
         setFullscreen(!isFullscreen);
-      } else if (e.key === 'Escape') {
+      } else if (e.code === 'Escape' || e.key === 'Escape') {
         if (isFullscreen) {
           e.preventDefault();
           setFullscreen(false);
@@ -208,10 +212,10 @@ export const App: React.FC = () => {
           e.preventDefault();
           useProjectStore.getState().setActiveClipId(null);
         }
-      } else if (e.key.toLowerCase() === 'm') {
+      } else if (isKey('KeyM', 'm')) {
         e.preventDefault();
         toggleMute();
-      } else if (e.key.toLowerCase() === 's' && !e.ctrlKey && !e.metaKey) {
+      } else if (isKey('KeyS', 's') && !isCmdOrCtrl && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         if (activeClipId) {
           const currentMs = usePlayerStore.getState().currentTimeMs;
@@ -231,17 +235,17 @@ export const App: React.FC = () => {
             accumulated += duration;
           }
         }
-      } else if (e.key.toLowerCase() === 'n' && !e.ctrlKey && !e.metaKey) {
+      } else if (isKey('KeyN', 'n') && !isCmdOrCtrl && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         toggleSnapping();
-      } else if (e.key === '=' || e.key === '+') {
+      } else if (e.code === 'Equal' || e.key === '=' || e.key === '+') {
         e.preventDefault();
         zoomBy(1.25, 400, 800, totalDurationMs);
-      } else if (e.key === '-' || e.key === '_') {
+      } else if (e.code === 'Minus' || e.key === '-' || e.key === '_') {
         e.preventDefault();
         zoomBy(0.8, 400, 800, totalDurationMs);
-      } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (!e.ctrlKey && !e.metaKey && !e.altKey && activeClipId) {
+      } else if (e.code === 'Delete' || e.code === 'Backspace' || e.key === 'Delete' || e.key === 'Backspace') {
+        if (!isCmdOrCtrl && !e.altKey && activeClipId) {
           const { isSettingsOpen, isExportOpen, isReplaceConfirmOpen, isShortcutsOpen, isWhatsNewOpen } =
             useUiStore.getState();
           if (!isSettingsOpen && !isExportOpen && !isReplaceConfirmOpen && !isShortcutsOpen && !isWhatsNewOpen) {

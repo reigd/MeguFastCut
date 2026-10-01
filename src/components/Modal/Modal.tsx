@@ -24,7 +24,7 @@ export const Modal: React.FC<ModalProps> = ({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
+      if ((e.key === 'Escape' || e.code === 'Escape') && isOpen) {
         onClose();
       }
     };
