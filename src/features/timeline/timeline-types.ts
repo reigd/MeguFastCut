@@ -17,6 +17,7 @@ export interface TimelineClipSegment {
   enabled: boolean;
   color: string;
   keyframes: number[];
+  speed: number;
 }
 
 export interface SnapCandidate {

@@ -58,13 +58,27 @@ export const ClipTimeInputs: React.FC = () => {
     return null;
   }
 
-  const durationMs = Math.max(0, activeClip.outMs - activeClip.inMs);
+  const speed = activeClip.speed && activeClip.speed > 0 ? activeClip.speed : 1.0;
+  const rawDurationMs = Math.max(0, activeClip.outMs - activeClip.inMs);
+  const effectiveDurationMs = Math.round(rawDurationMs / speed);
+
+  const getTimelineTimeForSource = (sourceTimeMs: number) => {
+    let acc = 0;
+    for (const c of project.clips) {
+      if (!c.enabled) continue;
+      if (c.id === activeClip.id) {
+        return acc + Math.round((sourceTimeMs - c.inMs) / speed);
+      }
+      acc += Math.round((c.outMs - c.inMs) / (c.speed || 1.0));
+    }
+    return acc;
+  };
 
   const commitIn = (valMs: number) => {
     const clampedIn = Math.max(0, Math.min(activeClip.outMs - 50, valMs));
     trimClip(activeClip.id, clampedIn, activeClip.outMs, true);
     setInStr(formatTimecode(clampedIn));
-    seek(clampedIn);
+    seek(getTimelineTimeForSource(clampedIn));
   };
 
   const commitOut = (valMs: number) => {
@@ -72,7 +86,7 @@ export const ClipTimeInputs: React.FC = () => {
     const clampedOut = Math.min(maxDur, Math.max(activeClip.inMs + 50, valMs));
     trimClip(activeClip.id, activeClip.inMs, clampedOut, true);
     setOutStr(formatTimecode(clampedOut));
-    seek(clampedOut);
+    seek(getTimelineTimeForSource(clampedOut));
   };
 
   const handleKeyDownIn = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -191,8 +205,19 @@ export const ClipTimeInputs: React.FC = () => {
             fontWeight: 600,
           }}
         >
-          {formatTimecode(durationMs)}
+          {formatTimecode(effectiveDurationMs)}
         </span>
+        {Math.abs(speed - 1.0) >= 0.01 && (
+          <span
+            style={{
+              fontSize: 'var(--text-10)',
+              color: 'var(--text-secondary)',
+              fontWeight: 500,
+            }}
+          >
+            ({speed}x)
+          </span>
+        )}
       </div>
     </div>
   );

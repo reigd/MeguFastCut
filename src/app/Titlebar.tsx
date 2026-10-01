@@ -5,7 +5,9 @@ import { useUiStore } from '../stores/ui';
 import { useSettingsStore } from '../stores/settings';
 import { t } from '../shared/i18n';
 import { CHANGELOG } from '../shared/changelog';
-import { SparkleIcon, SettingsIcon } from '../components/icons';
+import { SparkleIcon, SettingsIcon, PlusIcon, CloseIcon } from '../components/icons';
+import { Tooltip } from '../components/Tooltip/Tooltip';
+import { useProjectStore } from '../stores/project';
 
 export interface TitlebarProps {
   clipCount?: number;
@@ -18,6 +20,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
 }) => {
   const { setWhatsNewOpen, setSettingsOpen } = useUiStore();
   const { lastSeenVersion } = useSettingsStore();
+  const { isProjectOpen, createProject, closeProject } = useProjectStore();
   const [isMaximized, setIsMaximized] = useState(false);
 
   const currentVersion = CHANGELOG[0]?.version || '1.0.1';
@@ -148,6 +151,85 @@ export const Titlebar: React.FC<TitlebarProps> = ({
             <span className="timecode">
               {t('titlebar.total_duration', { time: formatTotalTime(totalDurationMs) })}
             </span>
+          </div>
+        )}
+
+        {/* Project Actions: New Project & Close Project */}
+        {(isProjectOpen || clipCount > 0) && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-1)',
+              marginLeft: 'var(--space-2)',
+              borderLeft: '1px solid var(--border-subtle)',
+              paddingLeft: 'var(--space-2)',
+            }}
+          >
+            <Tooltip content={t('titlebar.new_project')}>
+              <button
+                type="button"
+                onClick={() => createProject()}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  padding: '2px 8px',
+                  height: '24px',
+                  borderRadius: 'var(--r-sm)',
+                  background: 'transparent',
+                  border: '1px solid var(--border-subtle)',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  fontSize: 'var(--text-11)',
+                  fontWeight: 500,
+                  transition: 'all var(--dur-fast) var(--ease-out)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = 'var(--text-primary)';
+                  e.currentTarget.style.borderColor = 'var(--border-strong)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = 'var(--text-secondary)';
+                  e.currentTarget.style.borderColor = 'var(--border-subtle)';
+                }}
+              >
+                <PlusIcon size={12} />
+                <span>{t('titlebar.new_project')}</span>
+              </button>
+            </Tooltip>
+
+            <Tooltip content={t('titlebar.close_project')}>
+              <button
+                type="button"
+                onClick={() => closeProject()}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '24px',
+                  height: '24px',
+                  borderRadius: 'var(--r-sm)',
+                  background: 'transparent',
+                  border: '1px solid transparent',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  transition: 'all var(--dur-fast) var(--ease-out)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = 'var(--text-primary)';
+                  e.currentTarget.style.background = 'var(--bg-elevated)';
+                  e.currentTarget.style.borderColor = 'var(--border-subtle)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = 'var(--text-muted)';
+                  e.currentTarget.style.background = 'transparent';
+                  e.currentTarget.style.borderColor = 'transparent';
+                }}
+              >
+                <CloseIcon size={13} />
+              </button>
+            </Tooltip>
           </div>
         )}
       </div>

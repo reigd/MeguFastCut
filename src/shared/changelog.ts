@@ -18,6 +18,48 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.2',
+    date: '2026-09-29',
+    title: {
+      'en-US': 'Megu FastCut 1.0.2 Release',
+      uk: 'Реліз Megu FastCut 1.0.2',
+    },
+    highlight: {
+      'en-US': 'Per-clip video speed regulator from 0.01x to 999x with real-time preview and synchronized audio tempo.',
+      uk: 'Регулятор швидкості відео для кожного кліпу від 0.01x до 999x з живим переглядом та синхронним темпом аудіо.',
+    },
+    changes: [
+      {
+        kind: 'added',
+        text: {
+          'en-US': 'Independent per-clip speed slider with wide range from 0.01x ultra slow-motion up to 999x timelapse.',
+          uk: 'Індивідуальний повзунок швидкості для кожного кліпу в діапазоні від 0.01x уповільнення до 999x таймлапсу.',
+        },
+      },
+      {
+        kind: 'added',
+        text: {
+          'en-US': 'Quick speed presets (0.25x, 0.5x, 1x, 2x, 4x, 8x), precise numeric input, and instant 1.0x reset.',
+          uk: 'Швидкі пресети швидкості (0.25x, 0.5x, 1x, 2x, 4x, 8x), точне числове введення та миттєве скидання до 1.0x.',
+        },
+      },
+      {
+        kind: 'improved',
+        text: {
+          'en-US': 'Timeline canvas, timecode calculations, and export filtergraph accurately scale to each clip\'s speed.',
+          uk: 'Таймлайн, таймкоди та граф фільтрів експорту точно масштабуються під швидкість кожного окремого кліпу.',
+        },
+      },
+      {
+        kind: 'improved',
+        text: {
+          'en-US': 'Synchronized audio tempo scaling via chained atempo filters across extreme speed ranges.',
+          uk: 'Синхронне масштабування темпу звуку через ланцюжки фільтрів atempo навіть на екстремальних швидкостях.',
+        },
+      },
+    ],
+  },
+  {
     version: '1.0.1',
     date: '2026-09-20',
     title: {

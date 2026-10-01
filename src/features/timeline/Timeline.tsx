@@ -2,6 +2,7 @@ import React, { useRef } from 'react';
 import { TimelineToolbar } from './TimelineToolbar';
 import { TimelineCanvas } from './TimelineCanvas';
 import { useTimelineStore } from '../../stores/timeline';
+import { useProjectStore } from '../../stores/project';
 
 export const Timeline: React.FC = () => {
   const { timelineHeight, setTimelineHeight } = useTimelineStore();
@@ -37,6 +38,27 @@ export const Timeline: React.FC = () => {
   return (
     <section
       aria-label="Timeline"
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        const sourceId = e.dataTransfer.getData('megu/source-id');
+        if (sourceId) {
+          useProjectStore.getState().addClipFromSource(sourceId);
+          return;
+        }
+        const files = Array.from(e.dataTransfer.files);
+        if (files.length > 0) {
+          const paths = files
+            .map((f) => (f as unknown as { path?: string }).path || f.name)
+            .filter(Boolean);
+          if (paths.length > 0) {
+            useProjectStore.getState().addFiles(paths);
+          }
+        }
+      }}
       style={{
         display: 'flex',
         flexDirection: 'column',

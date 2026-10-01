@@ -9,6 +9,7 @@ import { TransportControls } from '../features/player/TransportControls';
 import { ClipStrip } from '../features/clips/ClipStrip';
 import { Timeline } from '../features/timeline/Timeline';
 import { PropertiesPanel } from '../features/properties/PropertiesPanel';
+import { MediaLibrary } from '../features/media/MediaLibrary';
 import { useProjectStore } from '../stores/project';
 import { usePlayerStore } from '../stores/player';
 import { useTimelineStore } from '../stores/timeline';
@@ -19,7 +20,7 @@ import { listen } from '@tauri-apps/api/event';
 import { subscribeLocale, formatTimecode, t } from '../../src/shared/i18n';
 import { Button } from '../components/Button/Button';
 import { Tooltip } from '../components/Tooltip/Tooltip';
-import { TrashIcon, FilmIcon, LightningIcon, ReplaceIcon } from '../components/icons';
+import { FilmIcon, LightningIcon, ReplaceIcon, CloseIcon } from '../components/icons';
 import { ExportModal } from '../features/export/ExportModal';
 import { ExportProgressModal } from '../features/export/ExportProgressModal';
 import { ExportCompleteModal } from '../features/export/ExportCompleteModal';
@@ -32,9 +33,13 @@ export const App: React.FC = () => {
     project,
     sources,
     activeClipId,
+    isProjectOpen,
+    createProject,
     addFiles,
+    closeProject,
     clearProject,
     splitClip,
+    removeClip,
     undo,
     redo,
   } = useProjectStore();
@@ -81,6 +86,7 @@ export const App: React.FC = () => {
     };
   }, [openExternalFile]);
 
+
   // Listen for file opened while app is already running (single-instance forward)
   useEffect(() => {
     const unlistenPromise = listen<string>('open-file', (event) => {
@@ -111,10 +117,12 @@ export const App: React.FC = () => {
     });
   }, []);
 
-  const totalDurationMs = project.clips.reduce(
-    (sum, c) => (c.enabled ? sum + (c.outMs - c.inMs) : sum),
-    0
-  );
+  const totalDurationMs = project.clips.reduce((max, c) => {
+    if (!c.enabled) return max;
+    const cSpeed = c.speed && c.speed > 0 ? c.speed : 1.0;
+    const dur = Math.round((c.outMs - c.inMs) / cSpeed);
+    return Math.max(max, (c.startMs ?? 0) + dur);
+  }, 0);
 
 
   // Keyboard navigation & Shortcuts
@@ -137,6 +145,9 @@ export const App: React.FC = () => {
       ) {
         e.preventDefault();
         redo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        createProject();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         const paths = await openVideoFileDialog();
@@ -181,7 +192,10 @@ export const App: React.FC = () => {
         seek(0);
       } else if (e.key === 'End') {
         e.preventDefault();
-        const total = project.clips.reduce((sum, c) => sum + (c.outMs - c.inMs), 0);
+        const total = project.clips.reduce(
+          (sum, c) => (c.enabled ? sum + Math.round((c.outMs - c.inMs) / (c.speed || 1.0)) : sum),
+          0
+        );
         seek(total);
       } else if (e.key.toLowerCase() === 'f') {
         e.preventDefault();
@@ -199,11 +213,13 @@ export const App: React.FC = () => {
           let accumulated = 0;
           for (const c of project.clips) {
             if (!c.enabled) continue;
-            const duration = c.outMs - c.inMs;
+            const cSpeed = c.speed && c.speed > 0 ? c.speed : 1.0;
+            const duration = Math.round((c.outMs - c.inMs) / cSpeed);
             if (c.id === activeClipId) {
               if (currentMs > accumulated && currentMs < accumulated + duration) {
                 const splitOffsetMs = currentMs - accumulated;
-                splitClip(activeClipId, c.inMs + splitOffsetMs);
+                const splitSourceTime = c.inMs + Math.round(splitOffsetMs * cSpeed);
+                splitClip(activeClipId, splitSourceTime);
               }
               break;
             }
@@ -219,6 +235,15 @@ export const App: React.FC = () => {
       } else if (e.key === '-' || e.key === '_') {
         e.preventDefault();
         zoomBy(0.8, 400, 800, totalDurationMs);
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (!e.ctrlKey && !e.metaKey && !e.altKey && activeClipId) {
+          const { isSettingsOpen, isExportOpen, isReplaceConfirmOpen, isShortcutsOpen, isWhatsNewOpen } =
+            useUiStore.getState();
+          if (!isSettingsOpen && !isExportOpen && !isReplaceConfirmOpen && !isShortcutsOpen && !isWhatsNewOpen) {
+            e.preventDefault();
+            removeClip(activeClipId);
+          }
+        }
       }
     };
 
@@ -238,15 +263,17 @@ export const App: React.FC = () => {
     project.clips,
     activeClipId,
     splitClip,
+    removeClip,
     undo,
     redo,
     toggleSnapping,
     zoomBy,
     totalDurationMs,
     openExportModal,
+    createProject,
   ]);
 
-  const isWelcomeScreen = project.clips.length === 0;
+  const isWelcomeScreen = !isProjectOpen && project.clips.length === 0 && sources.length === 0;
 
   return (
     <div
@@ -277,7 +304,7 @@ export const App: React.FC = () => {
             position: 'relative',
           }}
         >
-          {/* Upper Section: Preview + Properties Panel */}
+          {/* Upper Section: Media Library + Preview + Properties Panel */}
           <div
             style={{
               flex: 1,
@@ -286,6 +313,9 @@ export const App: React.FC = () => {
               minHeight: 0,
             }}
           >
+            {/* Left Media Library Panel (CapCut-style asset pool) */}
+            {!isFullscreen && <MediaLibrary />}
+
             {/* Center Preview Viewport */}
             <div
               style={{
@@ -361,10 +391,12 @@ export const App: React.FC = () => {
                   <span>{t('editor.fast_badge')}</span>
                 </div>
 
-                <Button variant="secondary" onClick={clearProject}>
-                  <TrashIcon size={16} />
-                  <span>{t('common.close')}</span>
-                </Button>
+                <Tooltip content={t('editor.close_tooltip')}>
+                  <Button variant="secondary" onClick={closeProject}>
+                    <CloseIcon size={16} />
+                    <span>{t('common.close')}</span>
+                  </Button>
+                </Tooltip>
 
                 <Tooltip
                   content={sources.length !== 1 ? t('replace.err_single_source_only') : 'Ctrl+Shift+S'}

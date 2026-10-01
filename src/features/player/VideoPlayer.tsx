@@ -6,7 +6,7 @@ import { ensureProxy } from '../../shared/proxy-manager';
 import { computeGeometry, buildCssTransform, resolveAspectRatio } from '../../shared/geometry';
 import { CropOverlay } from '../transform/CropOverlay';
 import { t } from '../../shared/i18n';
-import { SparkleIcon } from '../../components/icons';
+import { SparkleIcon, FilmIcon } from '../../components/icons';
 
 export const VideoPlayer: React.FC = () => {
   const { project, sources } = useProjectStore();
@@ -48,40 +48,46 @@ export const VideoPlayer: React.FC = () => {
   }, []);
 
   // Compute active clip based on currentTimeMs
-  const { currentClip, currentSource, currentClipIndex, clipLocalTimeMs } = useMemo(() => {
-    let accumulatedMs = 0;
+  const { currentClip, currentSource, currentClipIndex, clipLocalTimeMs, isGap } = useMemo(() => {
     const clips = project.clips.filter((c) => c.enabled);
 
     for (let i = 0; i < clips.length; i++) {
       const clip = clips[i];
-      const clipDuration = clip.outMs - clip.inMs;
+      const speed = clip.speed && clip.speed > 0 ? clip.speed : 1.0;
+      const clipDuration = Math.round((clip.outMs - clip.inMs) / speed);
+      const clipStart = clip.startMs ?? 0;
+      const clipEnd = clipStart + clipDuration;
 
-      if (currentTimeMs >= accumulatedMs && (currentTimeMs < accumulatedMs + clipDuration || i === clips.length - 1)) {
-        const localTime = clip.inMs + (currentTimeMs - accumulatedMs);
+      if (currentTimeMs >= clipStart && currentTimeMs < clipEnd) {
+        const localTimelineProgress = currentTimeMs - clipStart;
+        const localSourceTime = clip.inMs + localTimelineProgress * speed;
         const src = sources.find((s) => s.id === clip.sourceId);
         return {
           currentClip: clip,
           currentSource: src,
           currentClipIndex: i,
-          clipLocalTimeMs: Math.min(clip.outMs, Math.max(clip.inMs, localTime)),
+          clipLocalTimeMs: Math.min(clip.outMs, Math.max(clip.inMs, localSourceTime)),
+          isGap: false,
         };
       }
-      accumulatedMs += clipDuration;
     }
 
-    const firstClip = clips[0];
-    const src = firstClip ? sources.find((s) => s.id === firstClip.sourceId) : undefined;
     return {
-      currentClip: firstClip,
-      currentSource: src,
-      currentClipIndex: 0,
-      clipLocalTimeMs: firstClip ? firstClip.inMs : 0,
+      currentClip: undefined,
+      currentSource: undefined,
+      currentClipIndex: -1,
+      clipLocalTimeMs: 0,
+      isGap: true,
     };
   }, [project.clips, sources, currentTimeMs]);
 
   // Synchronized state refs for 60fps playback loop
   const currentClipRef = useRef(currentClip);
   currentClipRef.current = currentClip;
+  const isGapRef = useRef(isGap);
+  isGapRef.current = isGap;
+  const currentTimeMsRef = useRef(currentTimeMs);
+  currentTimeMsRef.current = currentTimeMs;
   const nextClipRef = useRef<typeof nextClip>(undefined);
   const currentClipIndexRef = useRef(currentClipIndex);
   currentClipIndexRef.current = currentClipIndex;
@@ -105,7 +111,9 @@ export const VideoPlayer: React.FC = () => {
     return sources.find((s) => s.id === nextClip.sourceId);
   }, [nextClip, sources]);
 
-  // Check and trigger proxy generation if needed
+  // Check and trigger proxy generation if needed (keyed by ID to avoid 60fps effect re-triggers)
+  const currentSourceId = currentSource?.id;
+  const nextSourceId = nextSource?.id;
   useEffect(() => {
     if (currentSource) {
       ensureProxy(currentSource);
@@ -113,7 +121,7 @@ export const VideoPlayer: React.FC = () => {
     if (nextSource) {
       ensureProxy(nextSource);
     }
-  }, [currentSource, nextSource]);
+  }, [currentSourceId, nextSourceId]);
 
   // Determine media URLs
   const currentVideoSrc = useMemo(() => {
@@ -172,7 +180,7 @@ export const VideoPlayer: React.FC = () => {
     activeVideo.muted = isAudioMuted;
     activeVideo.volume = Math.max(0, Math.min(1, volume * gainLinear));
 
-    if (isPlaying) {
+    if (isPlaying && !isGap) {
       activeVideo.play().catch((err) => {
         console.error('Video play error:', err);
         pause();
@@ -182,7 +190,21 @@ export const VideoPlayer: React.FC = () => {
       activeVideo.pause();
       bgVideoRef.current?.pause();
     }
-  }, [activeVideo, isPlaying, isMuted, volume, project.audio.muted, project.audio.volumeDb, pause]);
+  }, [activeVideo, isPlaying, isGap, isMuted, volume, project.audio.muted, project.audio.volumeDb, pause]);
+
+  // Set video playbackRate according to clip.speed (safely clamped for HTML5 video)
+  useEffect(() => {
+    if (activeVideo && currentClip) {
+      const targetRate = Math.max(0.0625, Math.min(16, currentClip.speed || 1.0));
+      if (Math.abs(activeVideo.playbackRate - targetRate) > 0.001) {
+        try {
+          activeVideo.playbackRate = targetRate;
+        } catch (e) {
+          console.warn('Could not set playbackRate:', e);
+        }
+      }
+    }
+  }, [activeVideo, currentClip?.id, currentClip?.speed]);
 
   // Seeking sync when paused (scrubbing & timeline clicking)
   useEffect(() => {
@@ -212,42 +234,107 @@ export const VideoPlayer: React.FC = () => {
 
   // Smooth 60fps Playback Engine
   useEffect(() => {
-    if (!activeVideo || !isPlaying) return;
+    if (!isPlaying) return;
 
     let animFrameId: number;
     let isSubscribed = true;
+    let lastTickTime = performance.now();
 
     const onTick = () => {
-      if (!isSubscribed || !activeVideo) return;
+      if (!isSubscribed) return;
 
+      const now = performance.now();
+      const deltaMs = now - lastTickTime;
+      lastTickTime = now;
+
+      const clips = projectClipsRef.current.filter((c) => c.enabled);
+      const totalDuration = clips.reduce((max, c) => {
+        const cSpeed = c.speed && c.speed > 0 ? c.speed : 1.0;
+        const dur = Math.round((c.outMs - c.inMs) / cSpeed);
+        return Math.max(max, (c.startMs ?? 0) + dur);
+      }, 0);
+
+      // Case 1: In a gap (no clip currently playing)
+      if (isGapRef.current || !currentClipRef.current) {
+        if (activeVideo && !activeVideo.paused) {
+          activeVideo.pause();
+        }
+        const currTime = currentTimeMsRef.current;
+        const nextTime = currTime + deltaMs;
+
+        if (nextTime >= totalDuration && totalDuration > 0) {
+          if (usePlayerStore.getState().isLooping) {
+            lastEmittedTimeMsRef.current = 0;
+            seek(0);
+          } else {
+            pause();
+            seek(0);
+            return;
+          }
+        } else {
+          // Check if nextTime enters a clip
+          const matchingClip = clips.find((c) => {
+            const cSpeed = c.speed && c.speed > 0 ? c.speed : 1.0;
+            const dur = Math.round((c.outMs - c.inMs) / cSpeed);
+            const cStart = c.startMs ?? 0;
+            return nextTime >= cStart && nextTime < cStart + dur;
+          });
+
+          if (matchingClip && activeVideo) {
+            const cSpeed = matchingClip.speed && matchingClip.speed > 0 ? matchingClip.speed : 1.0;
+            const localOffset = nextTime - (matchingClip.startMs ?? 0);
+            const targetSec = (matchingClip.inMs + localOffset * cSpeed) / 1000;
+            activeVideo.currentTime = targetSec;
+            activeVideo.play().catch(() => {});
+          }
+
+          lastEmittedTimeMsRef.current = nextTime;
+          seek(nextTime);
+        }
+
+        animFrameId = requestAnimationFrame(onTick);
+        return;
+      }
+
+      // Case 2: Inside an active clip
       const currentClip = currentClipRef.current;
-      if (!currentClip) return;
+      if (!currentClip || !activeVideo) {
+        animFrameId = requestAnimationFrame(onTick);
+        return;
+      }
 
       const vidTimeMs = activeVideo.currentTime * 1000;
 
       // Check if current clip has reached its out point
       if (vidTimeMs >= currentClip.outMs) {
-        const clips = projectClipsRef.current.filter((c) => c.enabled);
+        const cSpeed = currentClip.speed && currentClip.speed > 0 ? currentClip.speed : 1.0;
+        const currentClipDur = Math.round((currentClip.outMs - currentClip.inMs) / cSpeed);
+        const currentClipEnd = (currentClip.startMs ?? 0) + currentClipDur;
+
         const nextIdx = currentClipIndexRef.current + 1;
         const nextClip = clips[nextIdx];
 
-        if (nextClip && passiveVideo) {
-          // Transition seamlessly to next clip
-          passiveVideo.play().catch((err) => console.error('Passive play error:', err));
-          setActiveSlot((prev) => (prev === 'A' ? 'B' : 'A'));
-
-          let nextAcc = 0;
-          for (let i = 0; i < nextIdx; i++) {
-            nextAcc += clips[i].outMs - clips[i].inMs;
+        if (nextClip) {
+          const nextStart = nextClip.startMs ?? currentClipEnd;
+          if (nextStart <= currentClipEnd && passiveVideo) {
+            // Seamless transition to next clip
+            passiveVideo.play().catch((err) => console.error('Passive play error:', err));
+            setActiveSlot((prev) => (prev === 'A' ? 'B' : 'A'));
+            lastEmittedTimeMsRef.current = nextStart;
+            seek(nextStart);
+            return;
+          } else {
+            // Gap before next clip: pause active video and enter gap
+            activeVideo.pause();
+            lastEmittedTimeMsRef.current = currentClipEnd;
+            seek(currentClipEnd);
+            animFrameId = requestAnimationFrame(onTick);
+            return;
           }
-          lastEmittedTimeMsRef.current = nextAcc;
-          seek(nextAcc);
-          return;
         } else {
           // End of timeline reached
           if (usePlayerStore.getState().isLooping) {
-            activeVideo.currentTime = currentClip.inMs / 1000;
-            activeVideo.play().catch(() => {});
+            activeVideo.pause();
             lastEmittedTimeMsRef.current = 0;
             seek(0);
           } else {
@@ -258,13 +345,10 @@ export const VideoPlayer: React.FC = () => {
         }
       }
 
-      // Compute global timeline position
-      const clips = projectClipsRef.current.filter((c) => c.enabled);
-      let accumulated = 0;
-      for (let i = 0; i < currentClipIndexRef.current && i < clips.length; i++) {
-        accumulated += clips[i].outMs - clips[i].inMs;
-      }
-      const newGlobalTime = accumulated + Math.max(0, vidTimeMs - currentClip.inMs);
+      // Progress within clip
+      const speed = currentClip.speed && currentClip.speed > 0 ? currentClip.speed : 1.0;
+      const clipStart = currentClip.startMs ?? 0;
+      const newGlobalTime = clipStart + Math.max(0, Math.round((vidTimeMs - currentClip.inMs) / speed));
 
       lastEmittedTimeMsRef.current = newGlobalTime;
       seek(newGlobalTime);
@@ -316,6 +400,43 @@ export const VideoPlayer: React.FC = () => {
       return { width: `${Math.round(w)}px`, height: `${Math.round(h)}px` };
     }
   }, [containerSize, targetRatio]);
+
+  const videoBounds = useMemo(() => {
+    const containerW = parseInt(viewportDims.width, 10) || 800;
+    const containerH = parseInt(viewportDims.height, 10) || 450;
+    if (showOriginalAspect || project.fitMode === 'stretch' || project.fitMode === 'crop') {
+      return {
+        left: 0,
+        top: 0,
+        width: containerW,
+        height: containerH,
+      };
+    }
+    // In 'fit' mode: video is contained inside containerW x containerH
+    const srcRatio = srcW > 0 && srcH > 0 ? srcW / srcH : 16 / 9;
+    const containerRatio = containerW / containerH;
+    if (srcRatio > containerRatio) {
+      // Letterbox top/bottom
+      const w = containerW;
+      const h = Math.max(1, Math.round(containerW / srcRatio));
+      return {
+        left: 0,
+        top: Math.round((containerH - h) / 2),
+        width: w,
+        height: h,
+      };
+    } else {
+      // Pillarbox left/right
+      const h = containerH;
+      const w = Math.max(1, Math.round(containerH * srcRatio));
+      return {
+        left: Math.round((containerW - w) / 2),
+        top: 0,
+        width: w,
+        height: h,
+      };
+    }
+  }, [viewportDims.width, viewportDims.height, showOriginalAspect, project.fitMode, srcW, srcH]);
 
   const geometry = useMemo(() => {
     return computeGeometry(
@@ -386,7 +507,7 @@ export const VideoPlayer: React.FC = () => {
       )}
 
       {/* Blurred background ONLY when letterboxing actually exists and user opted into blur */}
-      {!showOriginalAspect && project.fitMode === 'fit' && project.padding.mode === 'blur' && hasLetterbox && (
+      {!showOriginalAspect && !isGap && project.fitMode === 'fit' && project.padding.mode === 'blur' && hasLetterbox && (
         <div
           style={{
             position: 'absolute',
@@ -458,7 +579,7 @@ export const VideoPlayer: React.FC = () => {
             objectFit: project.fitMode === 'stretch' ? 'fill' : 'contain',
             objectPosition: 'center',
             transform: cssTransform,
-            opacity: activeSlot === 'A' ? 1 : 0,
+            opacity: !isGap && activeSlot === 'A' ? 1 : 0,
             transition: 'opacity var(--dur-fast) var(--ease-out)',
             pointerEvents: 'none',
           }}
@@ -487,21 +608,63 @@ export const VideoPlayer: React.FC = () => {
             objectFit: project.fitMode === 'stretch' ? 'fill' : 'contain',
             objectPosition: 'center',
             transform: cssTransform,
-            opacity: activeSlot === 'B' ? 1 : 0,
+            opacity: !isGap && activeSlot === 'B' ? 1 : 0,
             transition: 'opacity var(--dur-fast) var(--ease-out)',
             pointerEvents: 'none',
           }}
         />
 
-        {/* Interactive Crop Overlay */}
-        {!showOriginalAspect && project.fitMode === 'crop' && (
-          <CropOverlay
-            width={parseInt(viewportDims.width, 10) || 800}
-            height={parseInt(viewportDims.height, 10) || 450}
-            sourceWidth={srcW}
-            sourceHeight={srcH}
-            onResizeChange={setIsResizingCrop}
-          />
+        {/* Interactive Transform/Crop Overlay on selected video (crop, fit, stretch) */}
+        {!showOriginalAspect && !isGap && (
+          <div
+            style={{
+              position: 'absolute',
+              left: `${videoBounds.left}px`,
+              top: `${videoBounds.top}px`,
+              width: `${videoBounds.width}px`,
+              height: `${videoBounds.height}px`,
+              zIndex: 20,
+              pointerEvents: 'none',
+            }}
+          >
+            <CropOverlay
+              width={videoBounds.width}
+              height={videoBounds.height}
+              sourceWidth={srcW}
+              sourceHeight={srcH}
+              onResizeChange={setIsResizingCrop}
+            />
+          </div>
+        )}
+
+        {/* Empty Canvas Watermark / Hint when project has no clips */}
+        {project.clips.length === 0 && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 'var(--space-2)',
+              color: 'var(--text-muted)',
+              pointerEvents: 'none',
+              userSelect: 'none',
+            }}
+          >
+            <FilmIcon size={36} opacity={0.35} />
+            <span
+              style={{
+                fontSize: 'var(--text-13)',
+                opacity: 0.6,
+                fontWeight: 500,
+                letterSpacing: '0.01em',
+              }}
+            >
+              {t('player.empty_canvas_hint')}
+            </span>
+          </div>
         )}
       </div>
     </div>

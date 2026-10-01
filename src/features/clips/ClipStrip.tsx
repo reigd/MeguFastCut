@@ -55,6 +55,13 @@ export const ClipStrip: React.FC = () => {
     setDraggedIdx(null);
     setDragTargetIdx(null);
 
+    // Check if source from MediaLibrary was dropped
+    const sourceId = e.dataTransfer.getData('megu/source-id');
+    if (sourceId) {
+      useProjectStore.getState().addClipFromSource(sourceId);
+      return;
+    }
+
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
       const paths = files

@@ -35,7 +35,7 @@ export interface AudioSettings {
 }
 
 export interface OutputSettings {
-  format: 'mp4_h264' | 'mp4_hevc' | 'webm_vp9' | 'webm_av1' | 'mov' | 'mkv' | 'avi' | 'gif' | 'audio_mp3' | 'audio_wav' | 'audio_aac' | 'audio_flac' | 'copy';
+  format: 'mp4_h264' | 'mp4_hevc' | 'webm_vp9' | 'webm_av1' | 'mov' | 'mkv' | 'avi' | 'gif' | 'audio_mp3' | 'audio_wav' | 'audio_aac' | 'audio_flac' | 'audio_ogg' | 'copy' | (string & {});
   quality: 'high' | 'balanced' | 'small' | 'custom';
   crf?: number;
   bitrateKbps?: number;
@@ -47,6 +47,17 @@ export interface OutputSettings {
   outputPath: string;
   filenameTemplate: string; // e.g. "{name}_fastcut{ext}"
   openFolderAfter: boolean;
+
+  // Multi-target & granular codec selection:
+  exportVideo?: boolean;
+  exportAudio?: boolean;
+  videoOutputPath?: string;
+  audioOutputPath?: string;
+  videoContainer?: 'mp4' | 'mkv' | 'mov' | 'webm' | 'avi' | 'gif' | (string & {});
+  videoCodec?: 'h264' | 'hevc' | 'av1' | 'vp9' | 'prores' | 'copy' | 'gif' | (string & {});
+  audioCodec?: 'aac' | 'mp3' | 'opus' | 'pcm' | 'copy' | (string & {});
+  audioFormat?: 'mp3' | 'wav' | 'flac' | 'aac' | 'ogg' | 'm4a' | (string & {});
+  audioBitrate?: '320k' | '256k' | '192k' | '128k' | 'lossless' | (string & {});
 }
 
 export interface VideoStreamProbe {
@@ -94,12 +105,14 @@ export interface Clip {
   sourceId: string;
   inMs: number;                // inclusive
   outMs: number;               // exclusive
+  startMs?: number;            // timeline start position in ms
   enabled: boolean;
   rotate: RotateAngle;         // clockwise
   flipH: boolean;
   flipV: boolean;
   cropOverride?: CropRect;
   volumeDb: number;            // 0 default
+  speed?: number;              // 0.01..999, default 1.0
 }
 
 export interface Project {

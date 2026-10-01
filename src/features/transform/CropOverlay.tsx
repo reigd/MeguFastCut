@@ -1,6 +1,9 @@
 import React, { useRef, useState } from 'react';
 import { useProjectStore } from '../../stores/project';
 import { useHistoryStore } from '../../stores/history';
+import { usePlayerStore } from '../../stores/player';
+import { AutoAlignIcon } from '../../components/icons';
+import { t } from '../../shared/i18n';
 import { makeEven } from '../../shared/geometry';
 
 interface CropOverlayProps {
@@ -53,6 +56,7 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
   onResizeChange,
 }) => {
   const { project, setCrop, setAspect } = useProjectStore();
+  const { autoAlignEnabled, toggleAutoAlign } = usePlayerStore();
   const crop = project.crop;
 
   const sessionRef = useRef<DragSession | null>(null);
@@ -121,8 +125,34 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
     let newH = session.startCropH;
 
     if (session.handle === 'move') {
-      newX = Math.max(0, Math.min(1 - session.startCropW, session.startCropX + dx));
-      newY = Math.max(0, Math.min(1 - session.startCropH, session.startCropY + dy));
+      let proposedX = session.startCropX + dx;
+      let proposedY = session.startCropY + dy;
+
+      const bypassSnap = e.altKey || e.ctrlKey;
+      if (autoAlignEnabled && !bypassSnap) {
+        const centerX = (1 - session.startCropW) / 2;
+        const centerY = (1 - session.startCropH) / 2;
+        const threshold = 0.02; // 2% snap threshold
+
+        if (Math.abs(proposedX - centerX) < threshold) {
+          proposedX = centerX;
+        } else if (Math.abs(proposedX) < threshold) {
+          proposedX = 0;
+        } else if (Math.abs(proposedX - (1 - session.startCropW)) < threshold) {
+          proposedX = 1 - session.startCropW;
+        }
+
+        if (Math.abs(proposedY - centerY) < threshold) {
+          proposedY = centerY;
+        } else if (Math.abs(proposedY) < threshold) {
+          proposedY = 0;
+        } else if (Math.abs(proposedY - (1 - session.startCropH)) < threshold) {
+          proposedY = 1 - session.startCropH;
+        }
+      }
+
+      newX = Math.max(0, Math.min(1 - session.startCropW, proposedX));
+      newY = Math.max(0, Math.min(1 - session.startCropH, proposedY));
       setCrop({
         x: newX,
         y: newY,
@@ -256,26 +286,30 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
     let activePresetId = 'custom';
     let activePresetLabel = `${currentRatio.toFixed(2)}:1`;
 
-    // Snap to standard presets
-    for (const preset of SNAP_PRESETS) {
-      if (Math.abs(currentRatio - preset.ratio) / preset.ratio < 0.035) {
-        currentRatio = preset.ratio;
-        snapped = true;
-        activePresetId = preset.id;
-        activePresetLabel = preset.label;
+    const bypassSnap = e.altKey || e.ctrlKey;
 
-        if (session.handle === 'e' || session.handle === 'w') {
-          const snappedW = (preset.ratio * newH * session.srcH) / session.srcW;
-          if (newX + snappedW <= 1) {
-            newW = snappedW;
+    // Snap to standard presets only if auto-alignment is enabled and not bypassed
+    if (autoAlignEnabled && !bypassSnap) {
+      for (const preset of SNAP_PRESETS) {
+        if (Math.abs(currentRatio - preset.ratio) / preset.ratio < 0.035) {
+          currentRatio = preset.ratio;
+          snapped = true;
+          activePresetId = preset.id;
+          activePresetLabel = preset.label;
+
+          if (session.handle === 'e' || session.handle === 'w') {
+            const snappedW = (preset.ratio * newH * session.srcH) / session.srcW;
+            if (newX + snappedW <= 1) {
+              newW = snappedW;
+            }
+          } else if (session.handle === 's' || session.handle === 'n') {
+            const snappedH = (newW * session.srcW) / (preset.ratio * session.srcH);
+            if (newY + snappedH <= 1) {
+              newH = snappedH;
+            }
           }
-        } else if (session.handle === 's' || session.handle === 'n') {
-          const snappedH = (newW * session.srcW) / (preset.ratio * session.srcH);
-          if (newY + snappedH <= 1) {
-            newH = snappedH;
-          }
+          break;
         }
-        break;
       }
     }
 
@@ -729,6 +763,39 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
           )}
         </div>
       )}
+
+      {/* Quick Auto-alignment indicator button (bottom-left) */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          toggleAutoAlign();
+        }}
+        title={autoAlignEnabled ? t('player.auto_align_on') : t('player.auto_align_off')}
+        style={{
+          position: 'absolute',
+          bottom: '12px',
+          left: '12px',
+          zIndex: 40,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '4px 10px',
+          background: autoAlignEnabled ? 'rgba(235, 94, 40, 0.22)' : 'rgba(15, 17, 23, 0.85)',
+          border: `1px solid ${autoAlignEnabled ? 'var(--accent)' : 'var(--border-subtle)'}`,
+          borderRadius: 'var(--r-full)',
+          color: autoAlignEnabled ? 'var(--accent)' : 'var(--text-secondary)',
+          fontSize: 'var(--text-11)',
+          fontWeight: 600,
+          cursor: 'pointer',
+          backdropFilter: 'blur(8px)',
+          transition: 'all 0.15s ease',
+          userSelect: 'none',
+        }}
+      >
+        <AutoAlignIcon size={13} />
+        <span>{t('transform.auto_align')}: {autoAlignEnabled ? 'ON' : 'OFF'}</span>
+      </button>
     </div>
   );
 };

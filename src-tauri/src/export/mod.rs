@@ -16,6 +16,10 @@ pub struct ExportSource {
     pub audio_codec: Option<String>,
 }
 
+fn default_speed() -> f64 {
+    1.0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportClip {
@@ -28,6 +32,10 @@ pub struct ExportClip {
     pub flip_h: bool,
     pub flip_v: bool,
     pub volume_db: f64,
+    #[serde(default = "default_speed")]
+    pub speed: f64,
+    #[serde(default)]
+    pub start_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +64,10 @@ pub struct ExportPadding {
     pub blur_strength: u32,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportOutput {
@@ -68,6 +80,24 @@ pub struct ExportOutput {
     pub hardware_accel: String, // "auto", "nvenc", "qsv", "amf", "cpu"
     pub output_path: String,
     pub open_folder_after: bool,
+    #[serde(default = "default_true")]
+    pub export_video: bool,
+    #[serde(default)]
+    pub export_audio: bool,
+    #[serde(default)]
+    pub video_output_path: Option<String>,
+    #[serde(default)]
+    pub audio_output_path: Option<String>,
+    #[serde(default)]
+    pub video_container: Option<String>,
+    #[serde(default)]
+    pub video_codec: Option<String>,
+    #[serde(default)]
+    pub audio_codec: Option<String>,
+    #[serde(default)]
+    pub audio_format: Option<String>,
+    #[serde(default)]
+    pub audio_bitrate: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

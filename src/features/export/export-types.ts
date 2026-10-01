@@ -19,6 +19,8 @@ export interface ExportClip {
   flipH: boolean;
   flipV: boolean;
   volumeDb: number;
+  speed?: number;
+  startMs?: number;
 }
 
 export interface ExportAspect {
@@ -51,6 +53,15 @@ export interface ExportOutput {
   hardwareAccel: string;
   outputPath: string;
   openFolderAfter: boolean;
+  exportVideo?: boolean;
+  exportAudio?: boolean;
+  videoOutputPath?: string;
+  audioOutputPath?: string;
+  videoContainer?: string;
+  videoCodec?: string;
+  audioCodec?: string;
+  audioFormat?: string;
+  audioBitrate?: string;
 }
 
 export interface ExportAudio {

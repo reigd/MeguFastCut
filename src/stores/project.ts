@@ -14,6 +14,7 @@ import {
 } from '../shared/types';
 import { probeFile } from '../shared/ipc';
 import { useHistoryStore } from './history';
+import { usePlayerStore } from './player';
 import { resolveAspectRatio } from '../shared/geometry';
 
 export interface RecentItem {
@@ -24,20 +25,41 @@ export interface RecentItem {
   height?: number;
   sizeBytes: number;
   lastOpened: number;
+  draft?: ProjectDraft;
 }
 
-interface ProjectState {
+export interface ProjectDraft {
+  version: 1;
   sources: SourceFile[];
   project: Project;
   activeClipId: string | null;
+  currentTimeMs: number;
+  savedAt: number;
+}
+
+interface ProjectState {
+  isProjectOpen: boolean;
+  sources: SourceFile[];
+  project: Project;
+  activeClipId: string | null;
+  draft: ProjectDraft | null;
   recentFiles: RecentItem[];
   isLoading: boolean;
   loadingMessage: string;
 
   // Actions
+  createProject: () => void;
+  importSources: (paths: string[]) => Promise<void>;
+  addClipFromSource: (sourceId: string, atTimeMs?: number) => void;
+  removeSource: (sourceId: string) => void;
   addFiles: (paths: string[]) => Promise<void>;
+  openRecentProject: (item: RecentItem) => Promise<void>;
+  closeProject: () => void;
+  restoreDraft: () => void;
+  discardDraft: () => void;
   clearProject: () => void;
   reorderClips: (fromIndex: number, toIndex: number) => void;
+  moveClip: (clipId: string, newStartMs: number) => void;
   removeClip: (clipId: string) => void;
   toggleClipEnabled: (clipId: string) => void;
   duplicateClip: (clipId: string) => void;
@@ -61,15 +83,62 @@ interface ProjectState {
   setOutput: (output: Partial<OutputSettings>) => void;
   setAudio: (audio: Partial<AudioSettings>) => void;
   setClipVolume: (clipId: string, volumeDb: number) => void;
+  setClipSpeed: (clipId: string, speed: number) => void;
   updateSourceAfterReplace: (sourceId: string, newProbe: ProbeResult) => void;
 }
 
 const RECENTS_KEY = 'megu-fastcut-recent-files';
+const DRAFT_KEY = 'megu-fastcut-project-draft';
+
+export function loadProjectDraft(): ProjectDraft | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ProjectDraft;
+    if (
+      parsed &&
+      Array.isArray(parsed.sources) &&
+      parsed.sources.length > 0 &&
+      parsed.project &&
+      Array.isArray(parsed.project.clips) &&
+      parsed.project.clips.length > 0
+    ) {
+      return parsed;
+    }
+  } catch (err) {
+    console.error('Failed to load project draft:', err);
+  }
+  return null;
+}
+
+export function persistProjectDraft(draft: ProjectDraft | null) {
+  try {
+    if (!draft || !draft.project || !draft.project.clips || draft.project.clips.length === 0) {
+      localStorage.removeItem(DRAFT_KEY);
+    } else {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+    }
+  } catch (err) {
+    console.error('Failed to persist project draft:', err);
+  }
+}
 
 function loadRecentFiles(): RecentItem[] {
   try {
     const raw = localStorage.getItem(RECENTS_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const items = JSON.parse(raw) as RecentItem[];
+      const draft = loadProjectDraft();
+      if (draft && draft.sources && draft.sources.length > 0) {
+        return items.map((it) => {
+          if (!it.draft && draft.sources.some((s) => s.path === it.path)) {
+            return { ...it, draft };
+          }
+          return it;
+        });
+      }
+      return items;
+    }
   } catch {
     // ignore
   }
@@ -111,7 +180,10 @@ const initialOutput: OutputSettings = {
   openFolderAfter: true,
 };
 
+const initialDraft = loadProjectDraft();
+
 export const useProjectStore = create<ProjectState>((set, get) => ({
+  isProjectOpen: false,
   sources: [],
   project: {
     clips: [],
@@ -123,12 +195,169 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     audio: initialAudio,
   },
   activeClipId: null,
+  draft: initialDraft,
   recentFiles: loadRecentFiles(),
   isLoading: false,
   loadingMessage: '',
 
+  createProject: () => {
+    useHistoryStore.getState().clearHistory();
+    usePlayerStore.getState().pause();
+    usePlayerStore.getState().seek(0);
+    set({
+      isProjectOpen: true,
+      sources: [],
+      project: {
+        clips: [],
+        aspect: initialAspect,
+        fitMode: 'fit',
+        crop: initialCrop,
+        padding: initialPadding,
+        output: initialOutput,
+        audio: initialAudio,
+      },
+      activeClipId: null,
+    });
+  },
+
+  importSources: async (paths: string[]) => {
+    if (paths.length === 0) return;
+    set({ isLoading: true, loadingMessage: 'Importing media...' });
+
+    const newSources: SourceFile[] = [];
+    const currentSources = [...get().sources];
+
+    for (const p of paths) {
+      if (currentSources.some((s) => s.path === p)) {
+        continue;
+      }
+      const filename = p.split(/[/\\]/).pop() || p;
+      try {
+        const probe = await probeFile(p);
+        const sourceId = `src-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        const source: SourceFile = {
+          id: sourceId,
+          path: p,
+          filename,
+          probe,
+        };
+        newSources.push(source);
+
+        const currentRecents = get().recentFiles.filter((r) => r.path !== p);
+        const updatedRecents: RecentItem[] = [
+          {
+            path: p,
+            filename,
+            durationMs: probe.durationMs,
+            width: probe.video?.width,
+            height: probe.video?.height,
+            sizeBytes: probe.sizeBytes,
+            lastOpened: Date.now(),
+          },
+          ...currentRecents,
+        ].slice(0, 8);
+
+        persistRecentFiles(updatedRecents);
+        set({ recentFiles: updatedRecents });
+      } catch (err) {
+        console.error(`Failed to probe ${p}:`, err);
+      }
+    }
+
+    set({
+      sources: [...currentSources, ...newSources],
+      isProjectOpen: true,
+      isLoading: false,
+      loadingMessage: '',
+    });
+  },
+
+  addClipFromSource: (sourceId: string, atTimeMs?: number) => {
+    const source = get().sources.find((s) => s.id === sourceId);
+    if (!source) return;
+
+    useHistoryStore.getState().recordChange(get().project.clips, 'Add clip from media library');
+
+    const currentClips = [...get().project.clips];
+    let nextStartMs = 0;
+
+    if (atTimeMs !== undefined && atTimeMs >= 0) {
+      nextStartMs = atTimeMs;
+    } else {
+      nextStartMs = currentClips.reduce((max, c) => {
+        const dur = Math.round((c.outMs - c.inMs) / (c.speed || 1.0));
+        return Math.max(max, (c.startMs ?? 0) + dur);
+      }, 0);
+    }
+
+    const newClip: Clip = {
+      id: `clip-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      sourceId,
+      inMs: 0,
+      outMs: source.probe.durationMs,
+      startMs: nextStartMs,
+      enabled: true,
+      rotate: 0,
+      flipH: false,
+      flipV: false,
+      volumeDb: 0,
+      speed: 1.0,
+    };
+
+    set({
+      project: {
+        ...get().project,
+        clips: [...currentClips, newClip],
+      },
+      activeClipId: newClip.id,
+      isProjectOpen: true,
+    });
+    usePlayerStore.getState().seek(nextStartMs);
+  },
+
+  removeSource: (sourceId: string) => {
+    const currentClips = get().project.clips;
+    const remainingClips = currentClips.filter((c) => c.sourceId !== sourceId);
+    if (remainingClips.length !== currentClips.length) {
+      useHistoryStore.getState().recordChange(currentClips, 'Remove media source');
+    }
+    const remainingSources = get().sources.filter((s) => s.id !== sourceId);
+    let nextActiveId = get().activeClipId;
+    if (nextActiveId && !remainingClips.some((c) => c.id === nextActiveId)) {
+      nextActiveId = remainingClips[0]?.id || null;
+    }
+    set({
+      sources: remainingSources,
+      project: {
+        ...get().project,
+        clips: remainingClips,
+      },
+      activeClipId: nextActiveId,
+    });
+  },
+
   addFiles: async (paths: string[]) => {
     if (paths.length === 0) return;
+
+    // If opening a single file from the Welcome Screen, check if it has a saved project draft
+    if (get().sources.length === 0 && paths.length === 1) {
+      const p = paths[0];
+      const matchingRecent = get().recentFiles.find((r) => r.path === p);
+      if (matchingRecent?.draft && matchingRecent.draft.project.clips.length > 0) {
+        await get().openRecentProject(matchingRecent);
+        return;
+      }
+      const globalDraft = get().draft || loadProjectDraft();
+      if (
+        globalDraft &&
+        globalDraft.sources.length === 1 &&
+        globalDraft.sources[0].path === p &&
+        globalDraft.project.clips.length > 0
+      ) {
+        get().restoreDraft();
+        return;
+      }
+    }
 
     set({ isLoading: true, loadingMessage: 'Analyzing media...' });
 
@@ -157,16 +386,27 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         };
         newSources.push(source);
 
+        let nextStartMs = currentClips.reduce((max, c) => {
+          const dur = Math.round((c.outMs - c.inMs) / (c.speed || 1.0));
+          return Math.max(max, (c.startMs ?? 0) + dur);
+        }, 0);
+        for (const nc of newClips) {
+          const dur = Math.round((nc.outMs - nc.inMs) / (nc.speed || 1.0));
+          nextStartMs = Math.max(nextStartMs, (nc.startMs ?? 0) + dur);
+        }
+
         const clip: Clip = {
           id: `clip-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           sourceId,
           inMs: 0,
           outMs: probe.durationMs,
+          startMs: nextStartMs,
           enabled: true,
           rotate: 0,
           flipH: false,
           flipV: false,
           volumeDb: 0,
+          speed: 1.0,
         };
         newClips.push(clip);
 
@@ -196,6 +436,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const allClips = [...currentClips, ...newClips];
 
     set({
+      isProjectOpen: true,
       sources: allSources,
       project: {
         ...get().project,
@@ -207,8 +448,115 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     });
   },
 
-  clearProject: () => {
+  openRecentProject: async (item: RecentItem) => {
+    let draftToRestore = item.draft;
+    if (!draftToRestore) {
+      const globalDraft = get().draft || loadProjectDraft();
+      if (globalDraft && globalDraft.sources.some((s) => s.path === item.path)) {
+        draftToRestore = globalDraft;
+      }
+    }
+
+    if (
+      draftToRestore &&
+      draftToRestore.sources &&
+      draftToRestore.sources.length > 0 &&
+      draftToRestore.project &&
+      draftToRestore.project.clips &&
+      draftToRestore.project.clips.length > 0
+    ) {
+      set({
+        isProjectOpen: true,
+        sources: draftToRestore.sources,
+        project: draftToRestore.project,
+        activeClipId: draftToRestore.activeClipId || draftToRestore.project.clips[0]?.id || null,
+        draft: draftToRestore,
+        isLoading: false,
+        loadingMessage: '',
+      });
+      useHistoryStore.getState().clearHistory();
+      usePlayerStore.getState().pause();
+      if (draftToRestore.currentTimeMs > 0) {
+        usePlayerStore.getState().seek(draftToRestore.currentTimeMs);
+      } else {
+        usePlayerStore.getState().seek(0);
+      }
+
+      // Bump to front of recents
+      const currentRecents = get().recentFiles;
+      const existingIndex = currentRecents.findIndex((r) => r.path === item.path);
+      let updatedRecents: RecentItem[];
+      if (existingIndex >= 0) {
+        const existing = currentRecents[existingIndex];
+        const updatedItem: RecentItem = {
+          ...existing,
+          lastOpened: Date.now(),
+          draft: draftToRestore,
+        };
+        updatedRecents = [
+          updatedItem,
+          ...currentRecents.filter((_, idx) => idx !== existingIndex),
+        ].slice(0, 8);
+      } else {
+        updatedRecents = [
+          { ...item, lastOpened: Date.now(), draft: draftToRestore },
+          ...currentRecents,
+        ].slice(0, 8);
+      }
+      persistRecentFiles(updatedRecents);
+      set({ recentFiles: updatedRecents });
+      return;
+    }
+
+    // Fallback if no draft
+    await get().addFiles([item.path]);
+  },
+
+  closeProject: () => {
+    const { sources, project, activeClipId, recentFiles } = get();
+    let currentDraft: ProjectDraft | null = null;
+    if (project.clips.length > 0 && sources.length > 0) {
+      currentDraft = {
+        version: 1,
+        sources,
+        project,
+        activeClipId,
+        currentTimeMs: usePlayerStore.getState().currentTimeMs,
+        savedAt: Date.now(),
+      };
+      persistProjectDraft(currentDraft);
+
+      // Save draft into the corresponding recentFiles item
+      const primaryPath = sources[0].path;
+      const existingIndex = recentFiles.findIndex((r) => r.path === primaryPath);
+      let updatedRecents: RecentItem[];
+      if (existingIndex >= 0) {
+        updatedRecents = recentFiles.map((r, i) =>
+          i === existingIndex ? { ...r, lastOpened: Date.now(), draft: currentDraft! } : r
+        );
+      } else {
+        const probe = sources[0].probe;
+        const newItem: RecentItem = {
+          path: primaryPath,
+          filename: sources[0].filename,
+          durationMs: probe.durationMs,
+          width: probe.video?.width,
+          height: probe.video?.height,
+          sizeBytes: probe.sizeBytes,
+          lastOpened: Date.now(),
+          draft: currentDraft,
+        };
+        updatedRecents = [newItem, ...recentFiles].slice(0, 8);
+      }
+      persistRecentFiles(updatedRecents);
+      set({ recentFiles: updatedRecents });
+    }
+
+    usePlayerStore.getState().pause();
+    usePlayerStore.getState().seek(0);
+    useHistoryStore.getState().clearHistory();
     set({
+      isProjectOpen: false,
       sources: [],
       project: {
         clips: [],
@@ -220,6 +568,63 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         audio: initialAudio,
       },
       activeClipId: null,
+      draft: currentDraft,
+    });
+  },
+
+  restoreDraft: () => {
+    const draft = get().draft || loadProjectDraft();
+    if (!draft || !draft.project || draft.project.clips.length === 0) return;
+    set({
+      isProjectOpen: true,
+      sources: draft.sources,
+      project: draft.project,
+      activeClipId: draft.activeClipId || draft.project.clips[0]?.id || null,
+      draft,
+    });
+    useHistoryStore.getState().clearHistory();
+    usePlayerStore.getState().pause();
+    if (draft.currentTimeMs > 0) {
+      usePlayerStore.getState().seek(draft.currentTimeMs);
+    } else {
+      usePlayerStore.getState().seek(0);
+    }
+  },
+
+  discardDraft: () => {
+    persistProjectDraft(null);
+    const draft = get().draft;
+    if (draft && draft.sources.length > 0) {
+      const primaryPath = draft.sources[0].path;
+      const updated = get().recentFiles.map((r) =>
+        r.path === primaryPath ? { ...r, draft: undefined } : r
+      );
+      persistRecentFiles(updated);
+      set({ draft: null, recentFiles: updated });
+    } else {
+      set({ draft: null });
+    }
+  },
+
+  clearProject: () => {
+    persistProjectDraft(null);
+    usePlayerStore.getState().pause();
+    usePlayerStore.getState().seek(0);
+    useHistoryStore.getState().clearHistory();
+    set({
+      isProjectOpen: false,
+      sources: [],
+      project: {
+        clips: [],
+        aspect: initialAspect,
+        fitMode: 'fit',
+        crop: initialCrop,
+        padding: initialPadding,
+        output: initialOutput,
+        audio: initialAudio,
+      },
+      activeClipId: null,
+      draft: null,
     });
   },
 
@@ -232,13 +637,35 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set((s) => ({ project: { ...s.project, clips } }));
   },
 
+  moveClip: (clipId: string, newStartMs: number) => {
+    const previousClips = get().project.clips;
+    useHistoryStore.getState().recordChange(previousClips, 'Move clip');
+    const clampedStartMs = Math.max(0, Math.round(newStartMs));
+    const clips = previousClips.map((c) =>
+      c.id === clipId ? { ...c, startMs: clampedStartMs } : c
+    );
+    clips.sort((a, b) => (a.startMs ?? 0) - (b.startMs ?? 0));
+    set((s) => ({ project: { ...s.project, clips } }));
+  },
+
   removeClip: (clipId: string) => {
     const previousClips = get().project.clips;
     useHistoryStore.getState().recordChange(previousClips, 'Remove clip');
+    const index = previousClips.findIndex((c) => c.id === clipId);
     const clips = previousClips.filter((c) => c.id !== clipId);
     let activeClipId = get().activeClipId;
     if (activeClipId === clipId) {
-      activeClipId = clips[0]?.id || null;
+      if (clips.length === 0) {
+        activeClipId = null;
+      } else if (index !== -1 && index < clips.length) {
+        activeClipId = clips[index].id;
+      } else {
+        activeClipId = clips[clips.length - 1].id;
+      }
+    }
+    if (clips.length === 0) {
+      usePlayerStore.getState().pause();
+      usePlayerStore.getState().seek(0);
     }
     set((s) => ({
       project: { ...s.project, clips },
@@ -261,9 +688,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (index === -1) return;
     useHistoryStore.getState().recordChange(clips, 'Duplicate clip');
     const original = clips[index];
+    const origSpeed = original.speed && original.speed > 0 ? original.speed : 1.0;
+    const origDur = Math.round((original.outMs - original.inMs) / origSpeed);
+    const origStart = original.startMs ?? 0;
     const duplicate: Clip = {
       ...original,
       id: `clip-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      startMs: origStart + origDur,
     };
     clips.splice(index + 1, 0, duplicate);
     set((s) => ({
@@ -281,15 +712,21 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (splitTimeMs <= original.inMs || splitTimeMs >= original.outMs) return;
     useHistoryStore.getState().recordChange(clips, 'Split clip');
 
+    const origSpeed = original.speed && original.speed > 0 ? original.speed : 1.0;
+    const splitOffsetMs = Math.round((splitTimeMs - original.inMs) / origSpeed);
+    const origStartMs = original.startMs ?? 0;
+
     const firstClip: Clip = {
       ...original,
       outMs: splitTimeMs,
+      startMs: origStartMs,
     };
 
     const secondClip: Clip = {
       ...original,
       id: `clip-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       inMs: splitTimeMs,
+      startMs: origStartMs + splitOffsetMs,
     };
 
     clips.splice(index, 1, firstClip, secondClip);
@@ -343,12 +780,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   removeRecentFile: (path: string) => {
     const updated = get().recentFiles.filter((r) => r.path !== path);
     persistRecentFiles(updated);
-    set({ recentFiles: updated });
+    const draft = get().draft;
+    const isSameDraft = draft && draft.sources.some((s) => s.path === path);
+    if (isSameDraft) {
+      persistProjectDraft(null);
+      set({ recentFiles: updated, draft: null });
+    } else {
+      set({ recentFiles: updated });
+    }
   },
 
   clearRecentFiles: () => {
     persistRecentFiles([]);
-    set({ recentFiles: [] });
+    persistProjectDraft(null);
+    set({ recentFiles: [], draft: null });
   },
 
   setActiveClipId: (id) => set({ activeClipId: id }),
@@ -425,6 +870,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       flipH: activeClip.flipH,
       flipV: activeClip.flipV,
       cropOverride: activeClip.cropOverride ? { ...activeClip.cropOverride } : undefined,
+      speed: activeClip.speed ?? 1.0,
     }));
     set((s) => ({ project: { ...s.project, clips } }));
   },
@@ -465,6 +911,50 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set((s) => ({ project: { ...s.project, clips } }));
   },
 
+  setClipSpeed: (clipId: string, speed: number) => {
+    const clamped = Math.max(0.01, Math.min(999, Number.isFinite(speed) ? speed : 1.0));
+    useHistoryStore.getState().recordChange(get().project.clips, 'Adjust clip speed');
+    const currentClips = get().project.clips;
+    const oldClip = currentClips.find((c) => c.id === clipId);
+    const oldSpeed = oldClip?.speed || 1.0;
+
+    const clips = currentClips.map((c) =>
+      c.id === clipId ? { ...c, speed: clamped } : c
+    );
+    set((s) => ({ project: { ...s.project, clips } }));
+
+    // Keep playhead on the same visual frame and within new duration bounds
+    try {
+      const player = usePlayerStore.getState();
+      const currMs = player.currentTimeMs;
+      if (oldClip && oldClip.enabled && Math.abs(oldSpeed - clamped) > 0.0001) {
+        let accBefore = 0;
+        for (const c of currentClips) {
+          if (!c.enabled) continue;
+          if (c.id === clipId) break;
+          accBefore += Math.round((c.outMs - c.inMs) / (c.speed || 1.0));
+        }
+        const oldDuration = Math.round((oldClip.outMs - oldClip.inMs) / oldSpeed);
+        if (currMs >= accBefore && currMs <= accBefore + oldDuration) {
+          const offset = currMs - accBefore;
+          const sourceOffset = offset * oldSpeed;
+          const newOffset = Math.round(sourceOffset / clamped);
+          player.seek(accBefore + newOffset);
+          return;
+        }
+      }
+      const totalDuration = clips.reduce(
+        (sum, c) => (c.enabled ? sum + Math.round((c.outMs - c.inMs) / (c.speed || 1.0)) : sum),
+        0
+      );
+      if (currMs > totalDuration && totalDuration > 0) {
+        player.seek(totalDuration);
+      }
+    } catch {
+      // Player store not ready yet
+    }
+  },
+
   updateSourceAfterReplace: (sourceId: string, newProbe: ProbeResult) => {
     set((state) => {
       const updatedSources = state.sources.map((s) =>
@@ -486,3 +976,67 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     });
   },
 }));
+
+let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+useProjectStore.subscribe((state, prevState) => {
+  if (
+    state.project !== prevState.project ||
+    state.sources !== prevState.sources ||
+    state.activeClipId !== prevState.activeClipId
+  ) {
+    if (state.project.clips.length > 0 && state.sources.length > 0) {
+      if (autoSaveTimer) clearTimeout(autoSaveTimer);
+      autoSaveTimer = setTimeout(() => {
+        const draft: ProjectDraft = {
+          version: 1,
+          sources: state.sources,
+          project: state.project,
+          activeClipId: state.activeClipId,
+          currentTimeMs: usePlayerStore.getState().currentTimeMs,
+          savedAt: Date.now(),
+        };
+        persistProjectDraft(draft);
+
+        // Also update matching recentFiles entry with the latest draft
+        const primaryPath = state.sources[0]?.path;
+        if (primaryPath) {
+          const recents = useProjectStore.getState().recentFiles;
+          const idx = recents.findIndex((r) => r.path === primaryPath);
+          if (idx >= 0) {
+            const updated = recents.map((r, i) => (i === idx ? { ...r, draft } : r));
+            persistRecentFiles(updated);
+            useProjectStore.setState({ recentFiles: updated, draft });
+          }
+        }
+      }, 400);
+    }
+  }
+});
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    const state = useProjectStore.getState();
+    if (state.project.clips.length > 0 && state.sources.length > 0) {
+      const draft: ProjectDraft = {
+        version: 1,
+        sources: state.sources,
+        project: state.project,
+        activeClipId: state.activeClipId,
+        currentTimeMs: usePlayerStore.getState().currentTimeMs,
+        savedAt: Date.now(),
+      };
+      persistProjectDraft(draft);
+
+      const primaryPath = state.sources[0]?.path;
+      if (primaryPath) {
+        const recents = state.recentFiles;
+        const idx = recents.findIndex((r) => r.path === primaryPath);
+        if (idx >= 0) {
+          const updated = recents.map((r, i) => (i === idx ? { ...r, draft } : r));
+          persistRecentFiles(updated);
+        }
+      }
+    }
+  });
+}

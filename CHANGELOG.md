@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-09-29
+
+### Added
+- Independent per-clip speed slider with wide range from 0.01x ultra slow-motion up to 999x timelapse.
+- Quick speed presets (0.25x, 0.5x, 1x, 2x, 4x, 8x), precise numeric input, and instant 1.0x reset button.
+
+### Improved
+- Timeline canvas segments, playhead scrubbing, and timecode calculations dynamically reflect each clip's speed.
+- Export pipeline applies PTS scaling (`setpts`) and chained audio tempo filters (`atempo`) across extreme speed ranges.
+
 ## [1.0.1] - 2026-09-20
 
 ### Added

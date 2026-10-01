@@ -13,14 +13,25 @@ import {
 } from './timeline-types';
 import { drawTimelineRuler } from './TimelineRuler';
 import { getSourceWaveform, drawClipWaveform } from './waveform-generator';
-import { formatTimecode } from '../../shared/i18n';
+import { formatTimecode, t } from '../../shared/i18n';
 
 interface DragState {
-  type: 'scrub' | 'trim-in' | 'trim-out';
+  type: 'scrub' | 'trim-in' | 'trim-out' | 'clip-pending' | 'clip-move' | 'clip-slip';
   clipId?: string;
+  sourceId?: string;
   startX: number;
+  currentX?: number;
+  grabOffsetX?: number;
+  clipWidth?: number;
+  clipDurationMs?: number;
+  initialStartMs?: number;
+  newStartMs?: number;
+  fromIndex?: number;
   initialInMs?: number;
   initialOutMs?: number;
+  sourceDurationMs?: number;
+  clipSpeed?: number;
+  isAlt?: boolean;
   initialClips?: Clip[];
 }
 
@@ -31,7 +42,7 @@ export const TimelineCanvas: React.FC = () => {
   const [activeSnapTime, setActiveSnapTime] = useState<number | null>(null);
   const [trimTooltip, setTrimTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
 
-  const { project, sources, activeClipId, setActiveClipId, trimClip } = useProjectStore();
+  const { project, sources, activeClipId, setActiveClipId, trimClip, moveClip } = useProjectStore();
   const { pixelsPerMs, scrollOffsetMs, snappingEnabled, timelineHeight, setScrollOffsetMs, zoomBy } =
     useTimelineStore();
 
@@ -48,9 +59,11 @@ export const TimelineCanvas: React.FC = () => {
       const src = sources.find((s) => s.id === clip.sourceId);
       const filename = src?.filename || `Clip ${index + 1}`;
       const srcDuration = src?.probe.durationMs || (clip.outMs - clip.inMs);
-      const clipDuration = Math.max(0, clip.outMs - clip.inMs);
-      const timelineStartMs = accumulatedMs;
-      const timelineEndMs = accumulatedMs + clipDuration;
+      const clipSpeed = clip.speed && clip.speed > 0 ? clip.speed : 1.0;
+      const rawDuration = Math.max(0, clip.outMs - clip.inMs);
+      const clipDuration = Math.round(rawDuration / clipSpeed);
+      const timelineStartMs = clip.startMs !== undefined ? clip.startMs : accumulatedMs;
+      const timelineEndMs = timelineStartMs + clipDuration;
 
       const seg: TimelineClipSegment = {
         clipId: clip.id,
@@ -64,6 +77,7 @@ export const TimelineCanvas: React.FC = () => {
         enabled: clip.enabled,
         color: palette[index % palette.length],
         keyframes: src?.probe.keyframes || [],
+        speed: clipSpeed,
       };
 
       segs.push(seg);
@@ -75,13 +89,13 @@ export const TimelineCanvas: React.FC = () => {
       // Keyframes inside clip segment
       seg.keyframes.forEach((kfMs) => {
         if (kfMs >= clip.inMs && kfMs <= clip.outMs) {
-          const kfTimelineMs = timelineStartMs + (kfMs - clip.inMs);
+          const kfTimelineMs = timelineStartMs + Math.round((kfMs - clip.inMs) / clipSpeed);
           candidates.push({ timeMs: kfTimelineMs, type: 'keyframe' });
         }
       });
 
       if (clip.enabled) {
-        accumulatedMs += clipDuration;
+        accumulatedMs = Math.max(accumulatedMs, timelineEndMs);
       }
     });
 
@@ -145,6 +159,9 @@ export const TimelineCanvas: React.FC = () => {
     ctx.lineWidth = 1;
     ctx.strokeRect(0, trackY - 0.5, width, trackHeight);
 
+    const isMoving = dragStateRef.current?.type === 'clip-move';
+    const draggedClipId = isMoving ? dragStateRef.current?.clipId : null;
+
     // 3. Render Clip Segments
     segments.forEach((seg) => {
       const startX = timeToPixel(seg.timelineStartMs, scrollOffsetMs, pixelsPerMs);
@@ -159,6 +176,21 @@ export const TimelineCanvas: React.FC = () => {
       const rectW = Math.max(4, clipWidth - clipGap);
       const rectY = trackY + 2;
       const rectH = trackHeight - 4;
+
+      // If this clip is currently being reordered/dragged, render a dashed placeholder ghost in its original slot
+      if (seg.clipId === draggedClipId) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+        ctx.beginPath();
+        ctx.roundRect(rectX, rectY, rectW, rectH, 4);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
 
       ctx.save();
 
@@ -201,7 +233,8 @@ export const TimelineCanvas: React.FC = () => {
           ctx.beginPath();
           ctx.rect(titleX, rectY, maxTitleW, 24);
           ctx.clip();
-          ctx.fillText(seg.filename, titleX, rectY + 12);
+          const displayTitle = Math.abs(seg.speed - 1.0) >= 0.01 ? `${seg.filename} (${seg.speed}x)` : seg.filename;
+          ctx.fillText(displayTitle, titleX, rectY + 12);
           ctx.restore();
         }
       }
@@ -214,10 +247,9 @@ export const TimelineCanvas: React.FC = () => {
 
         seg.keyframes.forEach((kfMs) => {
           if (kfMs >= seg.inMs && kfMs <= seg.outMs) {
-            const kfTimelineMs = seg.timelineStartMs + (kfMs - seg.inMs);
+            const kfTimelineMs = seg.timelineStartMs + Math.round((kfMs - seg.inMs) / seg.speed);
             const kfX = Math.round(timeToPixel(kfTimelineMs, scrollOffsetMs, pixelsPerMs)) + 0.5;
             if (kfX >= rectX && kfX <= rectX + rectW) {
-              // Draw small diamond mark at bottom edge
               const markY = rectY + rectH - 5;
               ctx.beginPath();
               ctx.moveTo(kfX, markY - 4);
@@ -231,9 +263,8 @@ export const TimelineCanvas: React.FC = () => {
         });
       }
 
-      // Trimmed portions indication (ghosted or border)
+      // Trimmed portions indication
       if (seg.inMs > 0 || seg.outMs < seg.sourceDurationMs) {
-        // Subtle indicator dot that clip is trimmed
         ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
         ctx.fillRect(rectX, rectY, 3, rectH);
         ctx.fillRect(rectX + rectW - 3, rectY, 3, rectH);
@@ -254,7 +285,7 @@ export const TimelineCanvas: React.FC = () => {
         ctx.roundRect(rectX, rectY, handleW, rectH, [4, 0, 0, 4]);
         ctx.fill();
 
-        // Left handle chevron / grip lines
+        // Left handle chevron
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
@@ -269,7 +300,7 @@ export const TimelineCanvas: React.FC = () => {
         ctx.roundRect(rectX + rectW - handleW, rectY, handleW, rectH, [0, 4, 4, 0]);
         ctx.fill();
 
-        // Right handle chevron / grip lines
+        // Right handle chevron
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
@@ -278,7 +309,6 @@ export const TimelineCanvas: React.FC = () => {
         ctx.lineTo(rectX + rectW - 6, rectY + rectH / 2 + 6);
         ctx.stroke();
       } else {
-        // Subtle outline for inactive clips
         ctx.strokeStyle = borderSubtle;
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -297,7 +327,89 @@ export const TimelineCanvas: React.FC = () => {
       ctx.restore();
     });
 
-    // 4. Render Ruler at top
+    // 4. Render Floating Dragged Clip (elevation preview)
+    if (isMoving && draggedClipId) {
+      const draggedSeg = segments.find((s) => s.clipId === draggedClipId);
+      const ds = dragStateRef.current;
+      if (
+        draggedSeg &&
+        ds &&
+        ds.clipWidth !== undefined
+      ) {
+        const floatX = ds.newStartMs !== undefined
+          ? Math.round(timeToPixel(ds.newStartMs, scrollOffsetMs, pixelsPerMs))
+          : Math.round((ds.currentX || 0) - (ds.grabOffsetX || 0));
+        const floatW = ds.clipWidth;
+        const floatY = trackY + 2;
+        const floatH = trackHeight - 4;
+
+        ctx.save();
+        // Elevation drop shadow
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.75)';
+        ctx.shadowBlur = 14;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 6;
+
+        ctx.fillStyle = 'rgba(29, 32, 39, 0.95)';
+        ctx.beginPath();
+        ctx.roundRect(floatX, floatY, floatW, floatH, 4);
+        ctx.fill();
+
+        ctx.shadowColor = 'transparent';
+
+        // Waveform preview in floating clip
+        const samples = getSourceWaveform(draggedSeg.sourceId, draggedSeg.sourceDurationMs);
+        drawClipWaveform(
+          ctx,
+          floatX,
+          floatY,
+          floatW,
+          floatH,
+          samples,
+          draggedSeg.inMs,
+          draggedSeg.outMs,
+          draggedSeg.sourceDurationMs,
+          waveformColor
+        );
+
+        // Highlight border
+        ctx.strokeStyle = clipBorder;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(floatX, floatY, floatW, floatH, 4);
+        ctx.stroke();
+
+        // Clip Title & badge
+        if (floatW > 24) {
+          ctx.beginPath();
+          ctx.arc(floatX + 10, floatY + 12, 4, 0, Math.PI * 2);
+          ctx.fillStyle = draggedSeg.color;
+          ctx.fill();
+
+          ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          ctx.fillStyle = textPrimary;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          const titleX = floatX + 18;
+          const maxTitleW = floatW - 24;
+          if (maxTitleW > 20) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(titleX, floatY, maxTitleW, 24);
+            ctx.clip();
+            const displayTitle =
+              Math.abs(draggedSeg.speed - 1.0) >= 0.01
+                ? `${draggedSeg.filename} (${draggedSeg.speed}x)`
+                : draggedSeg.filename;
+            ctx.fillText(displayTitle, titleX, floatY + 12);
+            ctx.restore();
+          }
+        }
+        ctx.restore();
+      }
+    }
+
+    // 6. Render Ruler at top
     drawTimelineRuler(
       ctx,
       width,
@@ -309,7 +421,7 @@ export const TimelineCanvas: React.FC = () => {
       borderSubtle
     );
 
-    // 5. Render Active Snap Guide Line
+    // 7. Render Active Snap Guide Line
     if (activeSnapTime !== null) {
       const snapX = Math.round(timeToPixel(activeSnapTime, scrollOffsetMs, pixelsPerMs)) + 0.5;
       if (snapX >= 0 && snapX <= width) {
@@ -324,12 +436,11 @@ export const TimelineCanvas: React.FC = () => {
       }
     }
 
-    // 6. Render Playhead with triangular cap
+    // 8. Render Playhead with triangular cap
     const currentMs = usePlayerStore.getState().currentTimeMs;
     const playheadX = Math.round(timeToPixel(currentMs, scrollOffsetMs, pixelsPerMs)) + 0.5;
 
     if (playheadX >= -10 && playheadX <= width + 10) {
-      // Playhead vertical line
       ctx.strokeStyle = playheadColor;
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -337,7 +448,6 @@ export const TimelineCanvas: React.FC = () => {
       ctx.lineTo(playheadX, height);
       ctx.stroke();
 
-      // Triangular cap in ruler
       const capW = 12;
       const capH = 14;
       ctx.fillStyle = playheadColor;
@@ -348,7 +458,6 @@ export const TimelineCanvas: React.FC = () => {
       ctx.closePath();
       ctx.fill();
 
-      // Inner dot
       ctx.fillStyle = '#FFFFFF';
       ctx.beginPath();
       ctx.arc(playheadX, 4, 1.5, 0, Math.PI * 2);
@@ -362,9 +471,10 @@ export const TimelineCanvas: React.FC = () => {
     pixelsPerMs,
     scrollOffsetMs,
     activeSnapTime,
+    project.clips.length,
   ]);
 
-  // Request continuous redraw on animation frames during playback
+  // Continuous redraw on animation frames during playback
   useEffect(() => {
     let animationFrameId: number;
 
@@ -386,17 +496,53 @@ export const TimelineCanvas: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, [draw]);
 
-  // Mouse Interaction: Scrubbing & Trimming
+  // Mouse Interaction: Scrubbing, Trimming & Dragging
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    if (e.button !== 0) return; // Left mouse button only
 
     const rect = canvas.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
     const clickTimeMs = pixelToTime(mouseX, scrollOffsetMs, pixelsPerMs);
 
-    // Check if clicked on active clip's trim handles
+    // 1. Click on Ruler (top 26px): scrub playhead
+    if (mouseY <= 26) {
+      dragStateRef.current = {
+        type: 'scrub',
+        startX: mouseX,
+      };
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+      let targetMs = clickTimeMs;
+      if (snappingEnabled) {
+        const snap = findSnapTarget(clickTimeMs, snapCandidates, pixelsPerMs);
+        if (snap) {
+          targetMs = snap.timeMs;
+          setActiveSnapTime(snap.timeMs);
+        } else {
+          setActiveSnapTime(null);
+        }
+      }
+      usePlayerStore.getState().seek(targetMs);
+      draw();
+      return;
+    }
+
+    // 2. Click directly on playhead vertical line or cap
+    const currentMs = usePlayerStore.getState().currentTimeMs;
+    const playheadX = timeToPixel(currentMs, scrollOffsetMs, pixelsPerMs);
+    if (Math.abs(mouseX - playheadX) <= 6) {
+      dragStateRef.current = {
+        type: 'scrub',
+        startX: mouseX,
+      };
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // 3. Check active clip trim handles (< and >)
     const activeSeg = segments.find((s) => s.clipId === activeClipId);
     if (activeSeg) {
       const startX = timeToPixel(activeSeg.timelineStartMs, scrollOffsetMs, pixelsPerMs);
@@ -432,24 +578,47 @@ export const TimelineCanvas: React.FC = () => {
       }
     }
 
-    // Check if clicked inside a clip segment on track to select it
-    if (mouseY > 26) {
-      const clickedSeg = segments.find(
-        (s) => clickTimeMs >= s.timelineStartMs && clickTimeMs <= s.timelineEndMs
-      );
-      if (clickedSeg && clickedSeg.clipId !== activeClipId) {
-        setActiveClipId(clickedSeg.clipId);
-      }
+    // 4. Click inside ANY clip segment on track -> prepare drag / selection
+    const clickedIndex = segments.findIndex(
+      (s) => clickTimeMs >= s.timelineStartMs && clickTimeMs <= s.timelineEndMs
+    );
+
+    if (clickedIndex !== -1) {
+      const clickedSeg = segments[clickedIndex];
+      const clipStartX = timeToPixel(clickedSeg.timelineStartMs, scrollOffsetMs, pixelsPerMs);
+      const clipEndX = timeToPixel(clickedSeg.timelineEndMs, scrollOffsetMs, pixelsPerMs);
+      const clipW = Math.max(4, clipEndX - clipStartX);
+
+      dragStateRef.current = {
+        type: 'clip-pending',
+        clipId: clickedSeg.clipId,
+        sourceId: clickedSeg.sourceId,
+        fromIndex: clickedIndex,
+        startX: mouseX,
+        currentX: mouseX,
+        grabOffsetX: mouseX - clipStartX,
+        clipWidth: clipW,
+        clipDurationMs: Math.max(0, clickedSeg.timelineEndMs - clickedSeg.timelineStartMs),
+        initialStartMs: clickedSeg.timelineStartMs,
+        newStartMs: clickedSeg.timelineStartMs,
+        initialInMs: clickedSeg.inMs,
+        initialOutMs: clickedSeg.outMs,
+        sourceDurationMs: clickedSeg.sourceDurationMs,
+        clipSpeed: clickedSeg.speed,
+        initialClips: JSON.parse(JSON.stringify(project.clips)),
+        isAlt: e.altKey,
+      };
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      return;
     }
 
-    // Start playhead scrub
+    // 5. Click on empty track area outside clips -> scrub playhead
     dragStateRef.current = {
       type: 'scrub',
       startX: mouseX,
     };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
 
-    // Snap playhead if enabled
     let targetMs = clickTimeMs;
     if (snappingEnabled) {
       const snap = findSnapTarget(clickTimeMs, snapCandidates, pixelsPerMs);
@@ -460,7 +629,6 @@ export const TimelineCanvas: React.FC = () => {
         setActiveSnapTime(null);
       }
     }
-
     usePlayerStore.getState().seek(targetMs);
     draw();
   };
@@ -472,12 +640,39 @@ export const TimelineCanvas: React.FC = () => {
     const rect = canvas.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
+    const width = canvas.clientWidth;
     const currentTimeAtMouse = pixelToTime(mouseX, scrollOffsetMs, pixelsPerMs);
 
     const state = dragStateRef.current;
 
     // Handle Active Drag
     if (state) {
+      // Transition from pending to active drag once movement exceeds threshold (4px)
+      if (state.type === 'clip-pending') {
+        const dist = Math.abs(mouseX - state.startX);
+        if (dist >= 4) {
+          usePlayerStore.getState().pause();
+          const isTrimmed =
+            (state.initialInMs !== undefined && state.initialInMs > 0) ||
+            (state.initialOutMs !== undefined &&
+              state.sourceDurationMs !== undefined &&
+              state.initialOutMs < state.sourceDurationMs);
+          const wantsSlip = state.isAlt && isTrimmed;
+
+          if (wantsSlip) {
+            state.type = 'clip-slip';
+          } else {
+            state.type = 'clip-move';
+          }
+          if (state.clipId) {
+            setActiveClipId(state.clipId);
+          }
+        } else {
+          return;
+        }
+      }
+
+      // 1. Scrub Playhead
       if (state.type === 'scrub') {
         let targetMs = currentTimeAtMouse;
         if (snappingEnabled) {
@@ -496,31 +691,36 @@ export const TimelineCanvas: React.FC = () => {
         return;
       }
 
-      if (state.type === 'trim-in' && state.clipId && state.initialInMs !== undefined && state.initialOutMs !== undefined) {
-        const deltaMs = (mouseX - state.startX) / pixelsPerMs;
+      // 2. Trim In Handle
+      if (
+        state.type === 'trim-in' &&
+        state.clipId &&
+        state.initialInMs !== undefined &&
+        state.initialOutMs !== undefined
+      ) {
+        const seg = segments.find((s) => s.clipId === state.clipId);
+        const clipSpeed = seg?.speed || 1.0;
+        const deltaMs = ((mouseX - state.startX) / pixelsPerMs) * clipSpeed;
         let newInMs = Math.max(0, Math.min(state.initialOutMs - 100, Math.round(state.initialInMs + deltaMs)));
 
-        // Snap to keyframes or 0
-        if (snappingEnabled) {
-          const seg = segments.find((s) => s.clipId === state.clipId);
-          if (seg) {
-            const snapKfs = [{ timeMs: 0, type: 'zero' as const }, ...seg.keyframes.map((k) => ({ timeMs: k, type: 'keyframe' as const }))];
-            const snap = findSnapTarget(newInMs, snapKfs, pixelsPerMs);
-            if (snap && snap.timeMs < state.initialOutMs - 100) {
-              newInMs = snap.timeMs;
-              setActiveSnapTime(seg.timelineStartMs);
-            } else {
-              setActiveSnapTime(null);
-            }
+        if (snappingEnabled && seg) {
+          const snapKfs = [
+            { timeMs: 0, type: 'zero' as const },
+            ...seg.keyframes.map((k) => ({ timeMs: k, type: 'keyframe' as const })),
+          ];
+          const snap = findSnapTarget(newInMs, snapKfs, pixelsPerMs / clipSpeed);
+          if (snap && snap.timeMs < state.initialOutMs - 100) {
+            newInMs = snap.timeMs;
+            setActiveSnapTime(seg.timelineStartMs);
+          } else {
+            setActiveSnapTime(null);
           }
         }
 
         trimClip(state.clipId, newInMs, state.initialOutMs);
 
-        // Preview frame at In point
-        const activeSeg = segments.find((s) => s.clipId === state.clipId);
-        if (activeSeg) {
-          usePlayerStore.getState().seek(activeSeg.timelineStartMs);
+        if (seg) {
+          usePlayerStore.getState().seek(seg.timelineStartMs);
         }
 
         setTrimTooltip({
@@ -532,16 +732,26 @@ export const TimelineCanvas: React.FC = () => {
         return;
       }
 
-      if (state.type === 'trim-out' && state.clipId && state.initialInMs !== undefined && state.initialOutMs !== undefined) {
-        const deltaMs = (mouseX - state.startX) / pixelsPerMs;
+      // 3. Trim Out Handle
+      if (
+        state.type === 'trim-out' &&
+        state.clipId &&
+        state.initialInMs !== undefined &&
+        state.initialOutMs !== undefined
+      ) {
+        const seg = segments.find((s) => s.clipId === state.clipId);
+        const clipSpeed = seg?.speed || 1.0;
+        const deltaMs = ((mouseX - state.startX) / pixelsPerMs) * clipSpeed;
         let newOutMs = Math.max(state.initialInMs + 100, Math.round(state.initialOutMs + deltaMs));
 
-        const seg = segments.find((s) => s.clipId === state.clipId);
         if (seg) {
           newOutMs = Math.min(seg.sourceDurationMs, newOutMs);
           if (snappingEnabled) {
-            const snapKfs = [{ timeMs: seg.sourceDurationMs, type: 'end' as const }, ...seg.keyframes.map((k) => ({ timeMs: k, type: 'keyframe' as const }))];
-            const snap = findSnapTarget(newOutMs, snapKfs, pixelsPerMs);
+            const snapKfs = [
+              { timeMs: seg.sourceDurationMs, type: 'end' as const },
+              ...seg.keyframes.map((k) => ({ timeMs: k, type: 'keyframe' as const })),
+            ];
+            const snap = findSnapTarget(newOutMs, snapKfs, pixelsPerMs / clipSpeed);
             if (snap && snap.timeMs > state.initialInMs + 100) {
               newOutMs = snap.timeMs;
               setActiveSnapTime(seg.timelineEndMs);
@@ -553,9 +763,10 @@ export const TimelineCanvas: React.FC = () => {
 
         trimClip(state.clipId, state.initialInMs, newOutMs);
 
-        // Preview frame at Out point
         if (seg) {
-          usePlayerStore.getState().seek(seg.timelineStartMs + (newOutMs - state.initialInMs));
+          usePlayerStore
+            .getState()
+            .seek(seg.timelineStartMs + Math.round((newOutMs - state.initialInMs) / clipSpeed));
         }
 
         setTrimTooltip({
@@ -566,14 +777,151 @@ export const TimelineCanvas: React.FC = () => {
         draw();
         return;
       }
+
+      // 4. Clip Move (dragging clip freely along the timeline track)
+      if (state.type === 'clip-move' && state.clipId) {
+        state.currentX = mouseX;
+
+        // Auto-scroll when dragging near viewport edges
+        const edgeMargin = 40;
+        if (mouseX > width - edgeMargin) {
+          const maxScroll = Math.max(0, totalDurationMs - width / pixelsPerMs);
+          const nextOffset = Math.min(maxScroll + 1000, scrollOffsetMs + 40);
+          setScrollOffsetMs(nextOffset);
+        } else if (mouseX < edgeMargin && scrollOffsetMs > 0) {
+          const nextOffset = Math.max(0, scrollOffsetMs - 40);
+          setScrollOffsetMs(nextOffset);
+        }
+
+        const grabOffset = state.grabOffsetX || 0;
+        const clipPixelLeft = mouseX - grabOffset;
+        const rawTargetStartMs = Math.max(0, Math.round(pixelToTime(clipPixelLeft, scrollOffsetMs, pixelsPerMs)));
+        const clipDurMs = state.clipDurationMs || 0;
+        let snappedStartMs = rawTargetStartMs;
+        let snapIndicatorTime: number | null = null;
+
+        if (snappingEnabled) {
+          const currentPlayhead = usePlayerStore.getState().currentTimeMs;
+          const otherSegments = segments.filter((s) => s.clipId !== state.clipId);
+
+          const snapPoints: number[] = [0, currentPlayhead];
+          otherSegments.forEach((seg) => {
+            snapPoints.push(seg.timelineStartMs);
+            snapPoints.push(seg.timelineEndMs);
+          });
+
+          let bestDist = Infinity;
+          const snapThresholdMs = 12 / pixelsPerMs;
+
+          for (const sp of snapPoints) {
+            // Check snapping to start
+            const distStart = Math.abs(rawTargetStartMs - sp);
+            if (distStart < snapThresholdMs && distStart < bestDist) {
+              bestDist = distStart;
+              snappedStartMs = sp;
+              snapIndicatorTime = sp;
+            }
+            // Check snapping to end
+            const targetEndMs = rawTargetStartMs + clipDurMs;
+            const distEnd = Math.abs(targetEndMs - sp);
+            if (distEnd < snapThresholdMs && distEnd < bestDist) {
+              bestDist = distEnd;
+              snappedStartMs = Math.max(0, sp - clipDurMs);
+              snapIndicatorTime = sp;
+            }
+          }
+        }
+
+        setActiveSnapTime(snapIndicatorTime);
+        state.newStartMs = snappedStartMs;
+
+        setTrimTooltip({
+          text: `${t('common.in')}: ${formatTimecode(snappedStartMs)}`,
+          x: Math.max(60, Math.min(width - 60, mouseX)),
+          y: Math.max(10, mouseY - 32),
+        });
+
+        draw();
+        return;
+      }
+
+      // 5. Clip Slip (sliding trimmed range along source media)
+      if (
+        state.type === 'clip-slip' &&
+        state.clipId &&
+        state.initialInMs !== undefined &&
+        state.initialOutMs !== undefined &&
+        state.sourceDurationMs !== undefined
+      ) {
+        const seg = segments.find((s) => s.clipId === state.clipId);
+        const clipSpeed = seg?.speed || 1.0;
+        const clipDur = state.initialOutMs - state.initialInMs;
+        const maxShift = state.sourceDurationMs - state.initialOutMs;
+        const minShift = -state.initialInMs;
+
+        const rawDeltaMs = ((mouseX - state.startX) / pixelsPerMs) * clipSpeed;
+        const shiftMs = Math.max(minShift, Math.min(maxShift, Math.round(rawDeltaMs)));
+
+        const newInMs = state.initialInMs + shiftMs;
+        const newOutMs = newInMs + clipDur;
+
+        trimClip(state.clipId, newInMs, newOutMs);
+
+        if (seg) {
+          usePlayerStore.getState().seek(seg.timelineStartMs);
+        }
+
+        const deltaSec = (shiftMs / 1000).toFixed(2);
+        const sign = shiftMs >= 0 ? '+' : '';
+        setTrimTooltip({
+          text: t('timeline.slip_clip', {
+            delta: `${sign}${deltaSec}s`,
+            in: formatTimecode(newInMs),
+            out: formatTimecode(newOutMs),
+          }),
+          x: Math.max(60, Math.min(width - 60, mouseX)),
+          y: Math.max(10, mouseY - 32),
+        });
+        draw();
+        return;
+      }
     }
 
-    // Hover Cursor Management (ew-resize on trim handles)
+    // Dynamic Hover Cursor Management
+    if (state) {
+      if (state.type === 'clip-move') {
+        canvas.style.cursor = 'grabbing';
+        return;
+      }
+      if (state.type === 'clip-slip' || state.type === 'trim-in' || state.type === 'trim-out') {
+        canvas.style.cursor = 'ew-resize';
+        return;
+      }
+      if (state.type === 'scrub') {
+        canvas.style.cursor = 'pointer';
+        return;
+      }
+    }
+
+    if (mouseY <= 26) {
+      canvas.style.cursor = 'pointer';
+      return;
+    }
+
+    // Playhead line/cap hover
+    const currentMs = usePlayerStore.getState().currentTimeMs;
+    const playheadX = timeToPixel(currentMs, scrollOffsetMs, pixelsPerMs);
+    if (Math.abs(mouseX - playheadX) <= 6) {
+      canvas.style.cursor = 'ew-resize';
+      return;
+    }
+
+    // Active clip trim handles hover
     const activeSeg = segments.find((s) => s.clipId === activeClipId);
-    if (activeSeg && mouseY > 26) {
+    if (activeSeg) {
       const startX = timeToPixel(activeSeg.timelineStartMs, scrollOffsetMs, pixelsPerMs);
       const endX = timeToPixel(activeSeg.timelineEndMs, scrollOffsetMs, pixelsPerMs);
-      const hitDistance = 12;
+      const hitDistance = 14;
 
       if (Math.abs(mouseX - startX) <= hitDistance || Math.abs(mouseX - endX) <= hitDistance) {
         canvas.style.cursor = 'ew-resize';
@@ -581,20 +929,61 @@ export const TimelineCanvas: React.FC = () => {
       }
     }
 
-    canvas.style.cursor = mouseY <= 26 ? 'pointer' : 'default';
+    // Hover over any clip on the track
+    const hoveredSeg = segments.find(
+      (s) => currentTimeAtMouse >= s.timelineStartMs && currentTimeAtMouse <= s.timelineEndMs
+    );
+    if (hoveredSeg) {
+      canvas.style.cursor = 'grab';
+      return;
+    }
+
+    canvas.style.cursor = 'default';
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (dragStateRef.current) {
       const state = dragStateRef.current;
-      if (state.initialClips && (state.type === 'trim-in' || state.type === 'trim-out')) {
-        const currentClips = useProjectStore.getState().project.clips;
-        const activeCurrent = currentClips.find((c) => c.id === state.clipId);
-        if (
-          activeCurrent &&
-          (activeCurrent.inMs !== state.initialInMs || activeCurrent.outMs !== state.initialOutMs)
-        ) {
-          useHistoryStore.getState().recordChange(state.initialClips, 'Trim clip');
+
+      // If pending clip click without drag: select clip and seek playhead
+      if (state.type === 'clip-pending') {
+        if (state.clipId) {
+          setActiveClipId(state.clipId);
+        }
+        const clickTimeMs = pixelToTime(state.startX, scrollOffsetMs, pixelsPerMs);
+        let targetMs = clickTimeMs;
+        if (snappingEnabled) {
+          const snap = findSnapTarget(clickTimeMs, snapCandidates, pixelsPerMs);
+          if (snap) targetMs = snap.timeMs;
+        }
+        usePlayerStore.getState().seek(targetMs);
+      } else if (state.type === 'clip-move') {
+        if (state.clipId && state.newStartMs !== undefined) {
+          moveClip(state.clipId, state.newStartMs);
+          setActiveClipId(state.clipId);
+          usePlayerStore.getState().seek(state.newStartMs);
+        }
+      } else if (state.type === 'clip-slip') {
+        if (state.initialClips && state.clipId) {
+          const currentClips = useProjectStore.getState().project.clips;
+          const current = currentClips.find((c) => c.id === state.clipId);
+          if (
+            current &&
+            (current.inMs !== state.initialInMs || current.outMs !== state.initialOutMs)
+          ) {
+            useHistoryStore.getState().recordChange(state.initialClips, 'Slip clip');
+          }
+        }
+      } else if (state.type === 'trim-in' || state.type === 'trim-out') {
+        if (state.initialClips && state.clipId) {
+          const currentClips = useProjectStore.getState().project.clips;
+          const activeCurrent = currentClips.find((c) => c.id === state.clipId);
+          if (
+            activeCurrent &&
+            (activeCurrent.inMs !== state.initialInMs || activeCurrent.outMs !== state.initialOutMs)
+          ) {
+            useHistoryStore.getState().recordChange(state.initialClips, 'Trim clip');
+          }
         }
       }
 
@@ -623,8 +1012,7 @@ export const TimelineCanvas: React.FC = () => {
       zoomBy(factor, mouseX, canvas.clientWidth, totalDurationMs);
       draw();
     } else {
-      // Horizontal pan
-      const delta = e.shiftKey ? e.deltaY : (e.deltaX || e.deltaY);
+      const delta = e.shiftKey ? e.deltaY : e.deltaX || e.deltaY;
       const deltaMs = delta / pixelsPerMs;
       const maxScroll = Math.max(0, totalDurationMs - canvas.clientWidth / pixelsPerMs);
       const nextOffset = Math.max(0, Math.min(maxScroll + 1000, scrollOffsetMs + deltaMs));
@@ -660,7 +1048,7 @@ export const TimelineCanvas: React.FC = () => {
         onWheel={handleWheel}
       />
 
-      {/* Floating Trim Timecode Tooltip */}
+      {/* Floating Timecode / Drag Tooltip */}
       {trimTooltip && (
         <div
           className="timecode"

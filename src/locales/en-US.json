@@ -11,11 +11,14 @@
     "minimize": "Minimize",
     "maximize": "Maximize",
     "restore": "Restore",
-    "close": "Close"
+    "close": "Close",
+    "new_project": "New Project",
+    "close_project": "Close Project"
   },
   "welcome": {
     "title": "Drop videos here to begin",
     "subtitle": "Trim, reorder, adjust aspect ratio and export in seconds",
+    "new_project": "New Project",
     "open_files": "Open videos",
     "recent_projects": "Recent Files",
     "no_recents": "No recent files",
@@ -24,7 +27,12 @@
     "shortcut_open": "Ctrl+O to open files",
     "shortcut_play": "Space to play / pause",
     "shortcut_split": "S to split clip at playhead",
-    "shortcut_export": "Ctrl+E to export"
+    "shortcut_export": "Ctrl+E to export",
+    "draft_title": "Saved Draft",
+    "draft_badge": "Auto-saved",
+    "draft_clips_count": "{count, plural, one {# clip} other {# clips}}",
+    "draft_resume_btn": "Resume Editing",
+    "draft_discard_btn": "Discard Draft"
   },
   "editor": {
     "properties": "Properties",
@@ -39,7 +47,8 @@
     "replace_btn": "Replace Current Video",
     "export_btn": "Export",
     "add_clip": "Add video",
-    "split": "Split"
+    "split": "Split",
+    "close_tooltip": "Close project (draft is auto-saved)"
   },
   "clips": {
     "incompatible_notice": "Clips have different formats — export will re-encode",
@@ -72,10 +81,16 @@
     "exit_fullscreen": "Exit fullscreen",
     "fit_preview": "Show with applied aspect ratio",
     "original_preview": "Show original frame",
-    "frame_label": "frame"
+    "frame_label": "frame",
+    "auto_align": "Auto-alignment (Snapping)",
+    "auto_align_on": "Auto-alignment: On (snaps to aspect ratios and guides)",
+    "auto_align_off": "Auto-alignment: Off (freeform precision)",
+    "empty_canvas_hint": "Black Canvas · Add media from library to start editing"
   },
   "transform": {
     "title": "Aspect & Framing",
+    "auto_align": "Auto-alignment",
+    "auto_align_hint": "Snap handles to standard aspect ratios and center guides",
     "aspect_ratio": "Aspect ratio",
     "aspect_original": "Original",
     "aspect_custom": "Custom",
@@ -100,7 +115,13 @@
     "blur_bg": "Blurred background",
     "solid_bg": "Solid color",
     "output_resolution": "Output resolution",
-    "res_auto": "Auto"
+    "res_auto": "Auto",
+    "speed": "Playback Speed",
+    "speed_presets": "Speed Presets",
+    "speed_reset": "Reset to 1.0x",
+    "speed_custom": "Custom Speed",
+    "speed_reencode_hint": "Speed changes require clip re-encoding",
+    "speed_duration_preview": "Effective duration"
   },
   "audio": {
     "title": "Audio",
@@ -130,6 +151,25 @@
     "filename_template": "File name template",
     "open_folder_after": "Open folder after export",
     "start_export": "Start export",
+    "targets_title": "Export targets",
+    "target_video": "Video (with audio)",
+    "target_video_desc": "Full video file containing synchronized audio",
+    "target_audio": "Audio only",
+    "target_audio_desc": "Standalone audio file extracted from timeline",
+    "target_error": "Select at least one export target",
+    "video_section": "Video settings",
+    "video_container": "Container format",
+    "video_codec": "Video codec",
+    "video_audio_codec": "Audio codec in video",
+    "video_output_path": "Video save location",
+    "audio_section": "Audio settings",
+    "audio_format": "Audio format",
+    "audio_bitrate": "Bitrate / Quality",
+    "audio_bitrate_lossless": "Lossless (16-bit PCM)",
+    "audio_output_path": "Audio save location",
+    "start_export_video": "Export Video",
+    "start_export_audio": "Export Audio",
+    "start_export_both": "Export Video & Audio (2 files)",
     "cancel": "Cancel",
     "progress_title": "Exporting...",
     "phase_analysis": "Pass 1/2: Analyzing audio loudness...",
@@ -208,7 +248,10 @@
     "zoom_in": "Zoom in",
     "zoom_out": "Zoom out",
     "split_at_playhead": "Split at playhead",
-    "no_clips": "No clips on timeline"
+    "no_clips": "No clips on timeline",
+    "reorder_clip": "Move to position {pos} of {total}",
+    "slip_clip": "Slip: {delta} ({in} – {out})",
+    "full_clip_hint": "Trim edges to slip, or Split (S) to reorder"
   },
   "common": {
     "ok": "OK",
@@ -224,5 +267,19 @@
     "out": "Out",
     "duration": "Duration",
     "zoom": "Zoom"
+  },
+  "media_library": {
+    "title": "Media",
+    "project_media": "Project Media",
+    "files_count": "{count, plural, one {# file} other {# files}}",
+    "import_btn": "Import",
+    "empty_title": "No media files yet",
+    "empty_hint": "Import or drag video and audio files here to start editing",
+    "add_to_timeline": "Add to Timeline",
+    "remove_from_project": "Remove from Project",
+    "on_timeline": "Used on timeline: {count}x",
+    "collapse": "Collapse panel",
+    "expand": "Expand panel",
+    "drop_hint": "Drop files to import into project"
   }
 }

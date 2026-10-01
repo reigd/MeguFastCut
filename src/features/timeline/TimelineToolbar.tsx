@@ -29,29 +29,26 @@ export const TimelineToolbar: React.FC = () => {
     fitToProject,
   } = useTimelineStore();
 
-  const totalDurationMs = project.clips.reduce(
-    (sum, c) => (c.enabled ? sum + (c.outMs - c.inMs) : sum),
-    0
-  );
+  const totalDurationMs = project.clips.reduce((max, c) => {
+    if (!c.enabled) return max;
+    const cSpeed = c.speed && c.speed > 0 ? c.speed : 1.0;
+    const duration = Math.round((c.outMs - c.inMs) / cSpeed);
+    return Math.max(max, (c.startMs ?? 0) + duration);
+  }, 0);
 
   const handleSplit = () => {
     if (!activeClipId) return;
-    let accumulated = 0;
     const activeClip = project.clips.find((c) => c.id === activeClipId);
-    if (!activeClip) return;
+    if (!activeClip || !activeClip.enabled) return;
 
-    for (const c of project.clips) {
-      if (!c.enabled) continue;
-      const duration = c.outMs - c.inMs;
-      if (c.id === activeClipId) {
-        if (currentTimeMs > accumulated && currentTimeMs < accumulated + duration) {
-          const splitOffsetMs = currentTimeMs - accumulated;
-          const splitSourceTime = activeClip.inMs + splitOffsetMs;
-          splitClip(activeClipId, splitSourceTime);
-        }
-        break;
-      }
-      accumulated += duration;
+    const cSpeed = activeClip.speed && activeClip.speed > 0 ? activeClip.speed : 1.0;
+    const duration = Math.round((activeClip.outMs - activeClip.inMs) / cSpeed);
+    const clipStart = activeClip.startMs ?? 0;
+
+    if (currentTimeMs > clipStart && currentTimeMs < clipStart + duration) {
+      const splitOffsetMs = currentTimeMs - clipStart;
+      const splitSourceTime = activeClip.inMs + Math.round(splitOffsetMs * cSpeed);
+      splitClip(activeClipId, splitSourceTime);
     }
   };
 

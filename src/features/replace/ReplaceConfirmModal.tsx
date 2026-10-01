@@ -34,7 +34,10 @@ export const ReplaceConfirmModal: React.FC = () => {
 
   const source = sources[0];
   const enabledClips = project.clips.filter((c) => c.enabled);
-  const newDurationMs = enabledClips.reduce((sum, c) => sum + (c.outMs - c.inMs), 0);
+  const newDurationMs = enabledClips.reduce(
+    (sum, c) => sum + Math.round((c.outMs - c.inMs) / (c.speed || 1.0)),
+    0
+  );
   const origDurationMs = source?.probe.durationMs || 0;
   const origSizeBytes = source?.probe.sizeBytes || 0;
 

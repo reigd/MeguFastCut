@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { usePlayerStore } from '../../stores/player';
 import { useProjectStore } from '../../stores/project';
 import { formatTimecode, t } from '../../shared/i18n';
@@ -19,6 +19,7 @@ import {
   FullscreenIcon,
   FullscreenExitIcon,
   AspectRatioIcon,
+  AutoAlignIcon,
 } from '../../components/icons';
 
 export const TransportControls: React.FC = () => {
@@ -31,6 +32,7 @@ export const TransportControls: React.FC = () => {
     isLooping,
     showOriginalAspect,
     isFullscreen,
+    autoAlignEnabled,
     togglePlay,
     pause,
     seek,
@@ -40,13 +42,24 @@ export const TransportControls: React.FC = () => {
     setVolume,
     toggleLoop,
     toggleOriginalAspect,
+    toggleAutoAlign,
     setFullscreen,
   } = usePlayerStore();
 
   const [showVolumeSlider, setShowVolumeSlider] = useState(false);
 
-  // Total project duration
-  const totalDurationMs = project.clips.reduce((sum, c) => sum + (c.outMs - c.inMs), 0);
+  // Total project duration taking per-clip speeds and enabled states into account
+  const totalDurationMs = project.clips.reduce(
+    (sum, c) => (c.enabled ? sum + Math.round((c.outMs - c.inMs) / (c.speed || 1.0)) : sum),
+    0
+  );
+
+  // Keep playhead within bounds if duration shrinks
+  useEffect(() => {
+    if (totalDurationMs > 0 && currentTimeMs > totalDurationMs) {
+      seek(totalDurationMs);
+    }
+  }, [totalDurationMs, currentTimeMs, seek]);
 
   // Approximate framerate from current clip source
   const currentSource = sources[0];
@@ -204,8 +217,19 @@ export const TransportControls: React.FC = () => {
         </span>
       </div>
 
-      {/* Right Group: Aspect Toggle, Volume, Loop, Fullscreen */}
+      {/* Right Group: Auto-align (Snapping), Aspect Toggle, Volume, Loop, Fullscreen */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+        {/* Auto-alignment / Snapping Toggle */}
+        <button
+          type="button"
+          onClick={toggleAutoAlign}
+          title={autoAlignEnabled ? t('player.auto_align_on') : t('player.auto_align_off')}
+          className={`transport-btn ${autoAlignEnabled ? 'active' : ''}`}
+          aria-label={t('player.auto_align')}
+        >
+          <AutoAlignIcon size={16} />
+        </button>
+
         {/* Toggle applied aspect vs original aspect */}
         <button
           type="button"

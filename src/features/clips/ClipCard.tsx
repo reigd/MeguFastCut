@@ -43,20 +43,26 @@ export const ClipCard: React.FC<ClipCardProps> = ({
 
   const isSelected = activeClipId === clip.id;
   const sourceColor = source ? getSourceColor(source.id, allSources) : 'var(--accent)';
-  const durationMs = clip.outMs - clip.inMs;
+  const speed = clip.speed ?? 1.0;
+  const rawDurationMs = clip.outMs - clip.inMs;
+  const effectiveDurationMs = Math.round(rawDurationMs / speed);
 
-  // Fetch thumbnail for the clip's start point
+  // Fetch thumbnail for the clip's start point (debounced to avoid FFmpeg process storm during timeline dragging)
   useEffect(() => {
     let active = true;
-    if (source?.path) {
+    if (!source?.path) return;
+
+    const timer = setTimeout(() => {
       getClipThumbnail(source.path, clip.inMs)
         .then((data) => {
           if (active) setThumbnail(data);
         })
         .catch(() => {});
-    }
+    }, 250);
+
     return () => {
       active = false;
+      clearTimeout(timer);
     };
   }, [source?.path, clip.inMs]);
 
@@ -64,7 +70,8 @@ export const ClipCard: React.FC<ClipCardProps> = ({
   const handleDoubleClick = () => {
     let accumulatedMs = 0;
     for (let i = 0; i < index; i++) {
-      accumulatedMs += project.clips[i].outMs - project.clips[i].inMs;
+      const c = project.clips[i];
+      accumulatedMs += Math.round((c.outMs - c.inMs) / (c.speed ?? 1.0));
     }
     seek(accumulatedMs);
   };
@@ -154,16 +161,32 @@ export const ClipCard: React.FC<ClipCardProps> = ({
             {source?.filename ? truncateMiddle(source.filename, 16) : clip.id}
           </span>
 
-          <span
-            className="timecode"
-            style={{
-              fontSize: 'var(--text-11)',
-              color: isSelected ? 'var(--accent)' : 'var(--text-secondary)',
-              marginTop: '1px',
-            }}
-          >
-            {formatTimecode(durationMs)}
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '1px' }}>
+            <span
+              className="timecode"
+              style={{
+                fontSize: 'var(--text-11)',
+                color: isSelected ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+            >
+              {formatTimecode(effectiveDurationMs)}
+            </span>
+            {Math.abs(speed - 1.0) >= 0.01 && (
+              <span
+                style={{
+                  fontSize: 'var(--text-10)',
+                  fontWeight: 600,
+                  padding: '0 4px',
+                  borderRadius: 'var(--r-sm)',
+                  background: 'var(--accent-muted)',
+                  color: 'var(--accent)',
+                  lineHeight: '14px',
+                }}
+              >
+                {speed}x
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Action Controls: Eye toggle + Close */}

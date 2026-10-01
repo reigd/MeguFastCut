@@ -3,17 +3,32 @@ import { useProjectStore, RecentItem } from '../../stores/project';
 import { openVideoFileDialog } from '../../shared/ipc';
 import { t, formatTimecode, formatFileSize } from '../../shared/i18n';
 import { Button } from '../../components/Button/Button';
+import { Tooltip } from '../../components/Tooltip/Tooltip';
 import {
   FilmIcon,
+  PlayIcon,
   FolderOpenIcon,
   ClockIcon,
   TrashIcon,
   KeyboardIcon,
   CloseIcon,
+  PlusIcon,
 } from '../../components/icons';
 
 export const WelcomeScreen: React.FC = () => {
-  const { addFiles, recentFiles, removeRecentFile, clearRecentFiles, isLoading, loadingMessage } = useProjectStore();
+  const {
+    createProject,
+    addFiles,
+    openRecentProject,
+    recentFiles,
+    removeRecentFile,
+    clearRecentFiles,
+    isLoading,
+    loadingMessage,
+    draft,
+    restoreDraft,
+    discardDraft,
+  } = useProjectStore();
   const [isDragOver, setIsDragOver] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
 
@@ -113,6 +128,96 @@ export const WelcomeScreen: React.FC = () => {
           gap: 'var(--space-6)',
         }}
       >
+        {/* Draft Resume Banner */}
+        {draft && draft.project.clips.length > 0 && (
+          <div
+            style={{
+              background: 'var(--bg-elevated)',
+              border: '1.5px solid var(--accent)',
+              borderRadius: 'var(--r-xl)',
+              padding: 'var(--space-4) var(--space-5)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 'var(--space-4)',
+              boxShadow: 'var(--shadow-2)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', minWidth: 0 }}>
+              <div
+                style={{
+                  width: '42px',
+                  height: '42px',
+                  borderRadius: 'var(--r-md)',
+                  background: 'var(--accent-muted)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: 'var(--accent)',
+                  flexShrink: 0,
+                }}
+              >
+                <FilmIcon size={22} />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                  <span style={{ fontWeight: 600, fontSize: 'var(--text-14)', color: 'var(--text-primary)' }}>
+                    {t('welcome.draft_title')}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 'var(--text-11)',
+                      padding: '1px 6px',
+                      borderRadius: 'var(--r-full)',
+                      background: 'var(--accent-muted)',
+                      color: 'var(--accent)',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {t('welcome.draft_badge')}
+                  </span>
+                </div>
+                <span
+                  style={{
+                    fontSize: 'var(--text-12)',
+                    color: 'var(--text-secondary)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {draft.sources[0]?.filename || 'Project'} • {draft.project.clips.length}{' '}
+                  {t('welcome.draft_clips_count', { count: draft.project.clips.length })}
+                </span>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+              <Button
+                variant="primary"
+                onClick={restoreDraft}
+                style={{ padding: 'var(--space-2) var(--space-4)' }}
+              >
+                <PlayIcon size={14} />
+                <span>{t('welcome.draft_resume_btn')}</span>
+              </Button>
+              <Tooltip content={t('welcome.draft_discard_btn')}>
+                <Button
+                  variant="ghost"
+                  onClick={discardDraft}
+                  style={{
+                    color: 'var(--text-muted)',
+                    padding: 'var(--space-2) var(--space-3)',
+                  }}
+                  aria-label={t('welcome.draft_discard_btn')}
+                >
+                  <TrashIcon size={16} />
+                </Button>
+              </Tooltip>
+            </div>
+          </div>
+        )}
+
         {/* Large Drag & Drop Card */}
         <div
           onClick={handleOpenDialog}
@@ -192,17 +297,52 @@ export const WelcomeScreen: React.FC = () => {
             {t('welcome.subtitle')}
           </p>
 
-          <Button
-            size="lg"
-            variant="primary"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleOpenDialog();
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 'var(--space-3)',
+              flexWrap: 'wrap',
             }}
           >
-            <FolderOpenIcon size={20} />
-            <span>{t('welcome.open_files')}</span>
-          </Button>
+            <Button
+              size="lg"
+              variant="primary"
+              onClick={(e) => {
+                e.stopPropagation();
+                createProject();
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--space-2)',
+                boxShadow: '0 4px 14px rgba(235, 94, 40, 0.35)',
+                padding: 'var(--space-3) var(--space-6)',
+              }}
+            >
+              <PlusIcon size={20} />
+              <span style={{ fontWeight: 600 }}>{t('welcome.new_project')}</span>
+            </Button>
+
+            <Button
+              size="lg"
+              variant="secondary"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleOpenDialog();
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--space-2)',
+                padding: 'var(--space-3) var(--space-5)',
+              }}
+            >
+              <FolderOpenIcon size={20} />
+              <span>{t('welcome.open_files')}</span>
+            </Button>
+          </div>
         </div>
 
         {/* Recents & Shortcuts Grid */}
@@ -267,7 +407,7 @@ export const WelcomeScreen: React.FC = () => {
                   <RecentFileCard
                     key={item.path}
                     item={item}
-                    onOpen={() => addFiles([item.path])}
+                    onOpen={() => openRecentProject(item)}
                     onRemove={() => removeRecentFile(item.path)}
                   />
                 ))}
@@ -407,11 +547,27 @@ const RecentFileCard: React.FC<{
               gap: 'var(--space-2)',
               fontSize: 'var(--text-11)',
               color: 'var(--text-muted)',
+              flexWrap: 'wrap',
             }}
           >
             <span className="timecode">{formatTimecode(item.durationMs)}</span>
             {item.width && item.height && <span>{item.width}×{item.height}</span>}
             <span>{formatFileSize(item.sizeBytes)}</span>
+            {item.draft && item.draft.project.clips.length > 0 && (
+              <span
+                style={{
+                  padding: '1px 6px',
+                  borderRadius: 'var(--r-full)',
+                  background: 'var(--accent-muted)',
+                  color: 'var(--accent)',
+                  fontWeight: 600,
+                  fontSize: 'var(--text-10)',
+                }}
+              >
+                {item.draft.project.clips.length}{' '}
+                {t('welcome.draft_clips_count', { count: item.draft.project.clips.length })}
+              </span>
+            )}
           </div>
         </div>
       </div>

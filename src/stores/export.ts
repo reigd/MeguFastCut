@@ -20,7 +20,7 @@ export interface ExportState {
   closeExportModal: () => void;
   closeProgressModal: () => void;
   closeCompleteModal: () => void;
-  startExportJob: (customOutputPath?: string) => Promise<void>;
+  startExportJob: (customOutputPath?: string, customAudioPath?: string) => Promise<void>;
   cancelCurrentExport: () => Promise<void>;
 }
 
@@ -28,6 +28,7 @@ export function getFormatExtension(format: string): string {
   switch (format) {
     case 'webm_vp9':
     case 'webm_av1':
+    case 'webm':
       return 'webm';
     case 'mov':
       return 'mov';
@@ -47,10 +48,56 @@ export function getFormatExtension(format: string): string {
       return 'm4a';
     case 'mp4_h264':
     case 'mp4_hevc':
+    case 'mp4':
     case 'copy':
     default:
       return 'mp4';
   }
+}
+
+export function getAudioExtension(format: string): string {
+  switch (format) {
+    case 'audio_wav':
+    case 'wav':
+      return 'wav';
+    case 'audio_flac':
+    case 'flac':
+      return 'flac';
+    case 'audio_aac':
+    case 'm4a':
+    case 'aac':
+      return 'm4a';
+    case 'audio_ogg':
+    case 'ogg':
+    case 'opus':
+      return 'ogg';
+    case 'audio_mp3':
+    case 'mp3':
+    default:
+      return 'mp3';
+  }
+}
+
+export function generateDefaultAudioOutputPath(
+  sourcePath: string,
+  audioFormat: string,
+  configuredDir?: string
+): string {
+  const ext = getAudioExtension(audioFormat);
+  const normalized = sourcePath.replace(/\\/g, '/');
+  const lastSlash = normalized.lastIndexOf('/');
+  const dir = configuredDir && configuredDir.trim().length > 0
+    ? configuredDir.replace(/\\/g, '/')
+    : lastSlash !== -1
+    ? normalized.slice(0, lastSlash)
+    : '';
+
+  const fullFilename = lastSlash !== -1 ? normalized.slice(lastSlash + 1) : normalized;
+  const dotIndex = fullFilename.lastIndexOf('.');
+  const baseName = dotIndex !== -1 ? fullFilename.slice(0, dotIndex) : fullFilename;
+
+  const outputFilename = `${baseName}_fastcut_audio.${ext}`;
+  return dir ? `${dir}/${outputFilename}` : outputFilename;
 }
 
 export function generateDefaultOutputPath(
@@ -154,7 +201,7 @@ export const useExportStore = create<ExportState>((set) => {
       }
     },
 
-    startExportJob: async (customOutputPath?: string) => {
+    startExportJob: async (customOutputPath?: string, customAudioPath?: string) => {
       const { project, sources } = useProjectStore.getState();
       const { defaultOutputDir } = useSettingsStore.getState();
 
@@ -164,12 +211,36 @@ export const useExportStore = create<ExportState>((set) => {
       }
 
       const firstSource = sources[0];
-      const targetPath =
-        customOutputPath ||
-        project.output.outputPath ||
-        generateDefaultOutputPath(firstSource.path, project.output.format, defaultOutputDir);
+      const exportVideo = project.output.exportVideo ?? true;
+      const exportAudio = project.output.exportAudio ?? false;
 
-      const totalDurationMs = enabledClips.reduce((sum, c) => sum + (c.outMs - c.inMs), 0);
+      const videoTarget =
+        (exportVideo && customOutputPath) ||
+        project.output.videoOutputPath ||
+        project.output.outputPath ||
+        generateDefaultOutputPath(
+          firstSource.path,
+          project.output.videoContainer || project.output.format,
+          defaultOutputDir
+        );
+
+      const audioTarget =
+        customAudioPath ||
+        (!exportVideo && customOutputPath) ||
+        project.output.audioOutputPath ||
+        generateDefaultAudioOutputPath(
+          firstSource.path,
+          project.output.audioFormat || 'mp3',
+          defaultOutputDir
+        );
+
+      const targetPath = exportVideo ? videoTarget : audioTarget;
+
+      const totalDurationMs = enabledClips.reduce((max, c) => {
+        const cSpeed = c.speed && c.speed > 0 ? c.speed : 1.0;
+        const dur = Math.round((c.outMs - c.inMs) / cSpeed);
+        return Math.max(max, (c.startMs ?? 0) + dur);
+      }, 0);
 
       const exportSources: ExportSource[] = sources.map((s) => ({
         id: s.id,
@@ -192,6 +263,8 @@ export const useExportStore = create<ExportState>((set) => {
         flipH: c.flipH,
         flipV: c.flipV,
         volumeDb: c.volumeDb || 0,
+        speed: c.speed || 1.0,
+        startMs: c.startMs,
       }));
 
       const job: ExportJob = {
@@ -225,6 +298,15 @@ export const useExportStore = create<ExportState>((set) => {
           hardwareAccel: project.output.hardwareAccel,
           outputPath: targetPath,
           openFolderAfter: project.output.openFolderAfter,
+          exportVideo,
+          exportAudio,
+          videoOutputPath: videoTarget,
+          audioOutputPath: audioTarget,
+          videoContainer: project.output.videoContainer,
+          videoCodec: project.output.videoCodec,
+          audioCodec: project.output.audioCodec,
+          audioFormat: project.output.audioFormat,
+          audioBitrate: project.output.audioBitrate,
         },
         audio: {
           trackIndex: project.audio.trackIndex,

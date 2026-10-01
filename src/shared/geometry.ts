@@ -125,11 +125,27 @@ export function computeGeometry(
   let padY = 0;
 
   if (fitMode === 'stretch') {
+    if (crop && crop.width > 0 && crop.height > 0 && (crop.width < 1 || crop.height < 1 || crop.x > 0 || crop.y > 0)) {
+      sourceCropW = makeEven(crop.width * srcW);
+      sourceCropH = makeEven(crop.height * srcH);
+      sourceCropX = makeEven(crop.x * srcW);
+      sourceCropY = makeEven(crop.y * srcH);
+    }
     scaledWidth = targetW;
     scaledHeight = targetH;
   } else if (fitMode === 'fit') {
     // Letterbox / Pillarbox inside target
-    const srcRatio = srcW / srcH;
+    let effectiveSrcW = srcW;
+    let effectiveSrcH = srcH;
+    if (crop && crop.width > 0 && crop.height > 0 && (crop.width < 1 || crop.height < 1 || crop.x > 0 || crop.y > 0)) {
+      sourceCropW = makeEven(crop.width * srcW);
+      sourceCropH = makeEven(crop.height * srcH);
+      sourceCropX = makeEven(crop.x * srcW);
+      sourceCropY = makeEven(crop.y * srcH);
+      effectiveSrcW = sourceCropW;
+      effectiveSrcH = sourceCropH;
+    }
+    const srcRatio = effectiveSrcW / effectiveSrcH;
     if (srcRatio > targetRatio) {
       // Fit to width, pillarbox top/bottom
       scaledWidth = targetW;
