@@ -4,7 +4,7 @@ import { useProjectStore } from '../../stores/project';
 import { usePlayerStore } from '../../stores/player';
 import { ensureProxy } from '../../shared/proxy-manager';
 import { computeGeometry, buildCssTransform, resolveAspectRatio } from '../../shared/geometry';
-import { CropOverlay } from '../transform/CropOverlay';
+import { CropOverlay, NormalizedBounds } from '../transform/CropOverlay';
 import { t } from '../../shared/i18n';
 import { SparkleIcon, FilmIcon } from '../../components/icons';
 
@@ -31,6 +31,7 @@ export const VideoPlayer: React.FC = () => {
   const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A');
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [isResizingCrop, setIsResizingCrop] = useState(false);
+  const [customBounds, setCustomBounds] = useState<NormalizedBounds | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -379,8 +380,6 @@ export const VideoPlayer: React.FC = () => {
     return resolveAspectRatio(project.aspect, srcW, srcH);
   }, [showOriginalAspect, project.fitMode, project.aspect, srcW, srcH]);
 
-  const hasLetterbox = Math.abs(targetRatio - (srcW / srcH)) > 0.02;
-
   const viewportDims = useMemo(() => {
     if (containerSize.width === 0 || containerSize.height === 0) {
       return { width: '92%', height: 'auto' };
@@ -400,42 +399,57 @@ export const VideoPlayer: React.FC = () => {
     }
   }, [containerSize, targetRatio]);
 
-  const videoBounds = useMemo(() => {
-    const containerW = parseInt(viewportDims.width, 10) || 800;
-    const containerH = parseInt(viewportDims.height, 10) || 450;
+  // Auto-reset custom bounds when clip, fitMode, aspect, or original switch occurs
+  useEffect(() => {
+    setCustomBounds(null);
+  }, [currentClip?.id, project.fitMode, project.aspect.id, project.aspect.ratio, showOriginalAspect]);
+
+  const containerW = parseInt(viewportDims.width, 10) || 800;
+  const containerH = parseInt(viewportDims.height, 10) || 450;
+
+  const defaultBounds = useMemo<NormalizedBounds>(() => {
     if (showOriginalAspect || project.fitMode === 'stretch' || project.fitMode === 'crop') {
-      return {
-        left: 0,
-        top: 0,
-        width: containerW,
-        height: containerH,
-      };
+      return { x: 0, y: 0, width: 1, height: 1 };
     }
-    // In 'fit' mode: video is contained inside containerW x containerH
-    const srcRatio = srcW > 0 && srcH > 0 ? srcW / srcH : 16 / 9;
-    const containerRatio = containerW / containerH;
-    if (srcRatio > containerRatio) {
-      // Letterbox top/bottom
-      const w = containerW;
-      const h = Math.max(1, Math.round(containerW / srcRatio));
+    // 'fit' mode: video preserves natural srcW / srcH within canvas
+    const videoRatio = srcW > 0 && srcH > 0 ? srcW / srcH : 16 / 9;
+    const canvasRatio = containerW > 0 && containerH > 0 ? containerW / containerH : 16 / 9;
+
+    if (videoRatio > canvasRatio) {
+      // Width fills canvas (1.0), height is letterboxed
+      const normH = canvasRatio / videoRatio;
       return {
-        left: 0,
-        top: Math.round((containerH - h) / 2),
-        width: w,
-        height: h,
+        x: 0,
+        y: Math.max(0, (1 - normH) / 2),
+        width: 1,
+        height: Math.min(1, normH),
       };
     } else {
-      // Pillarbox left/right
-      const h = containerH;
-      const w = Math.max(1, Math.round(containerH * srcRatio));
+      // Height fills canvas (1.0), width is pillarboxed
+      const normW = videoRatio / canvasRatio;
       return {
-        left: Math.round((containerW - w) / 2),
-        top: 0,
-        width: w,
-        height: h,
+        x: Math.max(0, (1 - normW) / 2),
+        y: 0,
+        width: Math.min(1, normW),
+        height: 1,
       };
     }
-  }, [viewportDims.width, viewportDims.height, showOriginalAspect, project.fitMode, srcW, srcH]);
+  }, [showOriginalAspect, project.fitMode, srcW, srcH, containerW, containerH]);
+
+  const activeBounds = customBounds || defaultBounds;
+
+  const pixelBounds = useMemo(() => {
+    return {
+      left: Math.round(activeBounds.x * containerW),
+      top: Math.round(activeBounds.y * containerH),
+      width: Math.max(1, Math.round(activeBounds.width * containerW)),
+      height: Math.max(1, Math.round(activeBounds.height * containerH)),
+    };
+  }, [activeBounds, containerW, containerH]);
+
+  const hasLetterbox =
+    Math.abs(targetRatio - (srcW / srcH)) > 0.02 ||
+    (customBounds !== null && (customBounds.width < 0.98 || customBounds.height < 0.98));
 
   const geometry = useMemo(() => {
     return computeGeometry(
@@ -476,7 +490,7 @@ export const VideoPlayer: React.FC = () => {
         userSelect: 'none',
       }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) {
+        if (!viewportRef.current || !viewportRef.current.contains(e.target as Node)) {
           setActiveClipId(null);
         }
       }}
@@ -538,7 +552,10 @@ export const VideoPlayer: React.FC = () => {
         data-target-w={geometry.targetWidth}
         data-target-h={geometry.targetHeight}
         onClick={(e) => {
-          if (e.target === e.currentTarget) {
+          const target = e.target as HTMLElement;
+          const isInsideCrop = !!target.closest('.crop-overlay-root');
+          const isInsideClickTarget = !!target.closest('.video-click-target');
+          if (!isInsideCrop && !isInsideClickTarget) {
             setActiveClipId(null);
           }
         }}
@@ -580,13 +597,15 @@ export const VideoPlayer: React.FC = () => {
           }}
           style={{
             position: 'absolute',
-            width: project.fitMode === 'stretch' ? '100%' : '100%',
-            height: project.fitMode === 'stretch' ? '100%' : '100%',
-            objectFit: project.fitMode === 'stretch' ? 'fill' : 'contain',
+            left: `${pixelBounds.left}px`,
+            top: `${pixelBounds.top}px`,
+            width: `${pixelBounds.width}px`,
+            height: `${pixelBounds.height}px`,
+            objectFit: 'fill',
             objectPosition: 'center',
             transform: cssTransform,
             opacity: !isGap && activeSlot === 'A' ? 1 : 0,
-            transition: 'opacity var(--dur-fast) var(--ease-out)',
+            transition: isResizingCrop ? 'none' : 'opacity var(--dur-fast) var(--ease-out)',
             pointerEvents: 'none',
           }}
         />
@@ -609,13 +628,15 @@ export const VideoPlayer: React.FC = () => {
           }}
           style={{
             position: 'absolute',
-            width: project.fitMode === 'stretch' ? '100%' : '100%',
-            height: project.fitMode === 'stretch' ? '100%' : '100%',
-            objectFit: project.fitMode === 'stretch' ? 'fill' : 'contain',
+            left: `${pixelBounds.left}px`,
+            top: `${pixelBounds.top}px`,
+            width: `${pixelBounds.width}px`,
+            height: `${pixelBounds.height}px`,
+            objectFit: 'fill',
             objectPosition: 'center',
             transform: cssTransform,
             opacity: !isGap && activeSlot === 'B' ? 1 : 0,
-            transition: 'opacity var(--dur-fast) var(--ease-out)',
+            transition: isResizingCrop ? 'none' : 'opacity var(--dur-fast) var(--ease-out)',
             pointerEvents: 'none',
           }}
         />
@@ -623,6 +644,7 @@ export const VideoPlayer: React.FC = () => {
         {/* Click-to-select video area when not selected */}
         {!isSelected && currentClip && !isGap && (
           <div
+            className="video-click-target"
             onClick={(e) => {
               e.stopPropagation();
               setActiveClipId(currentClip.id);
@@ -630,10 +652,10 @@ export const VideoPlayer: React.FC = () => {
             title={t('editor.select_clip') || 'Select video'}
             style={{
               position: 'absolute',
-              left: `${videoBounds.left}px`,
-              top: `${videoBounds.top}px`,
-              width: `${videoBounds.width}px`,
-              height: `${videoBounds.height}px`,
+              left: `${pixelBounds.left}px`,
+              top: `${pixelBounds.top}px`,
+              width: `${pixelBounds.width}px`,
+              height: `${pixelBounds.height}px`,
               zIndex: 15,
               cursor: 'pointer',
               pointerEvents: 'auto',
@@ -644,22 +666,27 @@ export const VideoPlayer: React.FC = () => {
         {/* Interactive Transform/Crop Overlay on selected video (crop, fit, stretch) */}
         {!showOriginalAspect && !isGap && isSelected && (
           <div
+            className="crop-overlay-root"
             style={{
               position: 'absolute',
-              left: `${videoBounds.left}px`,
-              top: `${videoBounds.top}px`,
-              width: `${videoBounds.width}px`,
-              height: `${videoBounds.height}px`,
+              left: `${pixelBounds.left}px`,
+              top: `${pixelBounds.top}px`,
+              width: `${pixelBounds.width}px`,
+              height: `${pixelBounds.height}px`,
               zIndex: 20,
               pointerEvents: 'none',
             }}
           >
             <CropOverlay
-              width={videoBounds.width}
-              height={videoBounds.height}
+              width={pixelBounds.width}
+              height={pixelBounds.height}
+              canvasWidth={containerW}
+              canvasHeight={containerH}
+              normalizedBounds={activeBounds}
               sourceWidth={srcW}
               sourceHeight={srcH}
               onResizeChange={setIsResizingCrop}
+              onBoundsChange={(bounds) => setCustomBounds(bounds)}
             />
           </div>
         )}
