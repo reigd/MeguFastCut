@@ -76,7 +76,7 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
   onResizeChange,
   onBoundsChange,
 }) => {
-  const { project, setCrop, setAspect } = useProjectStore();
+  const { project, setCrop } = useProjectStore();
   const { autoAlignEnabled, toggleAutoAlign } = usePlayerStore();
   const crop = project.crop;
   const isCropMode = project.fitMode === 'crop';
@@ -489,7 +489,6 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
 
     let currentRatio = (newW * session.srcW) / (newH * session.srcH);
     let snapped = false;
-    let activePresetId = 'custom';
     let activePresetLabel = `${currentRatio.toFixed(2)}:1`;
 
     const bypassSnap = e.altKey || e.ctrlKey;
@@ -500,7 +499,6 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
         if (Math.abs(currentRatio - preset.ratio) / preset.ratio < 0.035) {
           currentRatio = preset.ratio;
           snapped = true;
-          activePresetId = preset.id;
           activePresetLabel = preset.label;
 
           if (session.handle === 'e' || session.handle === 'w') {
@@ -529,25 +527,9 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
       height: newH,
     });
 
-    if (snapped) {
-      setAspect({
-        id: activePresetId,
-        label: activePresetLabel,
-        ratio: currentRatio,
-      }, false);
-    } else {
-      setAspect({
-        id: 'custom',
-        label: `${pixelW}:${pixelH}`,
-        customW: pixelW,
-        customH: pixelH,
-        ratio: currentRatio,
-      }, false);
-    }
-
     setHudInfo({
       visible: true,
-      label: activePresetLabel,
+      label: snapped ? activePresetLabel : `${pixelW}×${pixelH}`,
       ratio: currentRatio,
       snapped,
       width: pixelW,

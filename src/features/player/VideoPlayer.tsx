@@ -31,7 +31,10 @@ export const VideoPlayer: React.FC = () => {
   const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A');
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [isResizingCrop, setIsResizingCrop] = useState(false);
-  const [customBounds, setCustomBounds] = useState<NormalizedBounds | null>(null);
+  const [customBoundsPerMode, setCustomBoundsPerMode] = useState<{
+    fit?: NormalizedBounds;
+    stretch?: NormalizedBounds;
+  }>({});
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -374,11 +377,11 @@ export const VideoPlayer: React.FC = () => {
   const srcH = currentSource?.probe.video?.height || 1080;
 
   const targetRatio = useMemo(() => {
-    if (showOriginalAspect || project.fitMode === 'crop') {
+    if (showOriginalAspect) {
       return srcW > 0 && srcH > 0 ? srcW / srcH : 16 / 9;
     }
     return resolveAspectRatio(project.aspect, srcW, srcH);
-  }, [showOriginalAspect, project.fitMode, project.aspect, srcW, srcH]);
+  }, [showOriginalAspect, project.aspect, srcW, srcH]);
 
   const viewportDims = useMemo(() => {
     if (containerSize.width === 0 || containerSize.height === 0) {
@@ -399,10 +402,10 @@ export const VideoPlayer: React.FC = () => {
     }
   }, [containerSize, targetRatio]);
 
-  // Auto-reset custom bounds when clip, fitMode, aspect, or original switch occurs
+  // Reset custom bounds only when switching to a different clip
   useEffect(() => {
-    setCustomBounds(null);
-  }, [currentClip?.id, project.fitMode, project.aspect.id, project.aspect.ratio, showOriginalAspect]);
+    setCustomBoundsPerMode({});
+  }, [currentClip?.id]);
 
   const containerW = parseInt(viewportDims.width, 10) || 800;
   const containerH = parseInt(viewportDims.height, 10) || 450;
@@ -436,7 +439,14 @@ export const VideoPlayer: React.FC = () => {
     }
   }, [showOriginalAspect, project.fitMode, srcW, srcH, containerW, containerH]);
 
-  const activeBounds = customBounds || defaultBounds;
+  const activeCustomBounds =
+    project.fitMode === 'fit'
+      ? customBoundsPerMode.fit
+      : project.fitMode === 'stretch'
+        ? customBoundsPerMode.stretch
+        : null;
+
+  const activeBounds = activeCustomBounds || defaultBounds;
 
   const pixelBounds = useMemo(() => {
     return {
@@ -449,7 +459,7 @@ export const VideoPlayer: React.FC = () => {
 
   const hasLetterbox =
     Math.abs(targetRatio - (srcW / srcH)) > 0.02 ||
-    (customBounds !== null && (customBounds.width < 0.98 || customBounds.height < 0.98));
+    (activeCustomBounds != null && (activeCustomBounds.width < 0.98 || activeCustomBounds.height < 0.98));
 
   const geometry = useMemo(() => {
     return computeGeometry(
@@ -686,7 +696,13 @@ export const VideoPlayer: React.FC = () => {
               sourceWidth={srcW}
               sourceHeight={srcH}
               onResizeChange={setIsResizingCrop}
-              onBoundsChange={(bounds) => setCustomBounds(bounds)}
+              onBoundsChange={(bounds) => {
+                if (project.fitMode === 'fit') {
+                  setCustomBoundsPerMode((prev) => ({ ...prev, fit: bounds }));
+                } else if (project.fitMode === 'stretch') {
+                  setCustomBoundsPerMode((prev) => ({ ...prev, stretch: bounds }));
+                }
+              }}
             />
           </div>
         )}
