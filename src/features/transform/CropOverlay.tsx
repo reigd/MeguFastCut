@@ -4,7 +4,7 @@ import { useHistoryStore } from '../../stores/history';
 import { usePlayerStore } from '../../stores/player';
 import { AutoAlignIcon } from '../../components/icons';
 import { t } from '../../shared/i18n';
-import { makeEven } from '../../shared/geometry';
+import { makeEven, resolveAspectRatio } from '../../shared/geometry';
 
 interface CropOverlayProps {
   width: number;
@@ -58,6 +58,7 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
   const { project, setCrop, setAspect } = useProjectStore();
   const { autoAlignEnabled, toggleAutoAlign } = usePlayerStore();
   const crop = project.crop;
+  const isCropMode = project.fitMode === 'crop';
 
   const sessionRef = useRef<DragSession | null>(null);
   const [activeHandle, setActiveHandle] = useState<HandleType | null>(null);
@@ -74,13 +75,24 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
   const srcW = sourceWidth || 1920;
   const srcH = sourceHeight || 1080;
 
+  // In fit/stretch modes, ensure crop remains full frame
+  React.useEffect(() => {
+    if (!isCropMode) {
+      if (crop.x !== 0 || crop.y !== 0 || crop.width !== 1 || crop.height !== 1) {
+        setCrop({ x: 0, y: 0, width: 1, height: 1 });
+      }
+    }
+  }, [isCropMode, crop.x, crop.y, crop.width, crop.height, setCrop]);
+
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>, handle: HandleType) => {
     e.stopPropagation();
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
 
     const currentCrop = project.crop;
-    const currentRatio = (currentCrop.width * srcW) / (currentCrop.height * srcH);
+    const currentRatio = isCropMode
+      ? (currentCrop.width * srcW) / (currentCrop.height * srcH)
+      : resolveAspectRatio(project.aspect, srcW, srcH);
 
     sessionRef.current = {
       handle,
@@ -105,8 +117,8 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
         label: project.aspect.label || `${currentRatio.toFixed(2)}:1`,
         ratio: currentRatio,
         snapped: project.aspect.id !== 'custom',
-        width: Math.round(srcW * currentCrop.width),
-        height: Math.round(srcH * currentCrop.height),
+        width: isCropMode ? Math.round(srcW * currentCrop.width) : Math.round(srcH * currentRatio),
+        height: isCropMode ? Math.round(srcH * currentCrop.height) : srcH,
       });
     }
   };
@@ -118,6 +130,78 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
     // Normalised delta (0..1) relative to container dimensions
     const dx = (e.clientX - session.startX) / session.containerW;
     const dy = (e.clientY - session.startY) / session.containerH;
+
+    if (!isCropMode) {
+      if (session.handle === 'move') {
+        return;
+      }
+
+      // Compute pixel deltas for aspect resizing
+      const deltaPxX = e.clientX - session.startX;
+      const deltaPxY = e.clientY - session.startY;
+
+      let currentPixelW = session.containerW;
+      let currentPixelH = session.containerH;
+
+      if (session.handle.includes('e')) {
+        currentPixelW = Math.max(40, session.containerW + deltaPxX);
+      } else if (session.handle.includes('w')) {
+        currentPixelW = Math.max(40, session.containerW - deltaPxX);
+      }
+
+      if (session.handle.includes('s')) {
+        currentPixelH = Math.max(40, session.containerH + deltaPxY);
+      } else if (session.handle.includes('n')) {
+        currentPixelH = Math.max(40, session.containerH - deltaPxY);
+      }
+
+      let currentRatio = currentPixelW / currentPixelH;
+      let snapped = false;
+      let activePresetId = 'custom';
+      let activePresetLabel = `${currentRatio.toFixed(2)}:1`;
+
+      const bypassSnap = e.altKey || e.ctrlKey;
+      if (autoAlignEnabled && !bypassSnap) {
+        for (const preset of SNAP_PRESETS) {
+          if (Math.abs(currentRatio - preset.ratio) / preset.ratio < 0.04) {
+            currentRatio = preset.ratio;
+            snapped = true;
+            activePresetId = preset.id;
+            activePresetLabel = preset.label;
+            break;
+          }
+        }
+      }
+
+      const pixelW = makeEven(Math.round(currentRatio > (srcW / srcH) ? srcH * currentRatio : srcW));
+      const pixelH = makeEven(Math.round(currentRatio > (srcW / srcH) ? srcH : srcW / currentRatio));
+
+      if (snapped) {
+        setAspect({
+          id: activePresetId,
+          label: activePresetLabel,
+          ratio: currentRatio,
+        }, false);
+      } else {
+        setAspect({
+          id: 'custom',
+          label: `${pixelW}:${pixelH}`,
+          customW: pixelW,
+          customH: pixelH,
+          ratio: currentRatio,
+        }, false);
+      }
+
+      setHudInfo({
+        visible: true,
+        label: activePresetLabel,
+        ratio: currentRatio,
+        snapped,
+        width: pixelW,
+        height: pixelH,
+      });
+      return;
+    }
 
     let newX = session.startCropX;
     let newY = session.startCropY;
@@ -352,6 +436,7 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (sessionRef.current) {
       const wasResize = sessionRef.current.handle !== 'move';
+      const dist = Math.hypot(e.clientX - sessionRef.current.startX, e.clientY - sessionRef.current.startY);
       sessionRef.current = null;
       setActiveHandle(null);
       if (wasResize) {
@@ -363,7 +448,11 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
       } catch {
         // ignore
       }
-      useHistoryStore.getState().recordChange(project.clips, 'Crop proportions adjusted');
+      if (wasResize) {
+        useHistoryStore.getState().recordChange(project.clips, isCropMode ? 'Crop adjusted' : 'Aspect ratio adjusted');
+      } else if (!isCropMode && dist < 5) {
+        usePlayerStore.getState().togglePlay();
+      }
     }
   };
 
@@ -377,8 +466,12 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
       onPointerDown={(e) => {
-        // Clicking on the dimmed area centers the crop box at that position
         if (e.target !== e.currentTarget) return;
+        if (!isCropMode) {
+          useProjectStore.getState().setActiveClipId(null);
+          return;
+        }
+        // Clicking on the dimmed area centers the crop box at that position
         const rect = e.currentTarget.getBoundingClientRect();
         const clickX = (e.clientX - rect.left) / rect.width;
         const clickY = (e.clientY - rect.top) / rect.height;
@@ -392,71 +485,158 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
         zIndex: 20,
         pointerEvents: 'auto',
         userSelect: 'none',
-        overflow: 'hidden',
+        overflow: isCropMode ? 'hidden' : 'visible',
       }}
     >
-      {/* Active Crop Box with dark outer dimming shadow */}
+      {/* Active Selection / Crop Box */}
       <div
         onPointerDown={(e) => handleHandleDown(e, 'move')}
         style={{
           position: 'absolute',
-          left: `${crop.x * 100}%`,
-          top: `${crop.y * 100}%`,
-          width: `${crop.width * 100}%`,
-          height: `${crop.height * 100}%`,
-          border: '1.5px solid var(--accent)',
+          left: isCropMode ? `${crop.x * 100}%` : 0,
+          top: isCropMode ? `${crop.y * 100}%` : 0,
+          width: isCropMode ? `${crop.width * 100}%` : '100%',
+          height: isCropMode ? `${crop.height * 100}%` : '100%',
+          border: isCropMode ? '1.5px solid var(--accent)' : '1.5px solid #ffffff',
           borderRadius: '2px',
-          boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.65)',
-          cursor: activeHandle === 'move' ? 'grabbing' : 'grab',
+          boxShadow: isCropMode ? '0 0 0 9999px rgba(0, 0, 0, 0.65)' : 'none',
+          cursor: isCropMode ? (activeHandle === 'move' ? 'grabbing' : 'grab') : 'default',
           pointerEvents: 'auto',
           boxSizing: 'border-box',
         }}
       >
-        {/* Rule-of-Thirds Grid */}
-        <div
-          style={{
-            position: 'absolute',
-            top: '33.333%',
-            left: 0,
-            right: 0,
-            height: '1px',
-            background: 'var(--crop-guide)',
-            pointerEvents: 'none',
-          }}
-        />
-        <div
-          style={{
-            position: 'absolute',
-            top: '66.666%',
-            left: 0,
-            right: 0,
-            height: '1px',
-            background: 'var(--crop-guide)',
-            pointerEvents: 'none',
-          }}
-        />
-        <div
-          style={{
-            position: 'absolute',
-            left: '33.333%',
-            top: 0,
-            bottom: 0,
-            width: '1px',
-            background: 'var(--crop-guide)',
-            pointerEvents: 'none',
-          }}
-        />
-        <div
-          style={{
-            position: 'absolute',
-            left: '66.666%',
-            top: 0,
-            bottom: 0,
-            width: '1px',
-            background: 'var(--crop-guide)',
-            pointerEvents: 'none',
-          }}
-        />
+        {/* Rule-of-Thirds Grid ONLY in crop mode */}
+        {isCropMode && (
+          <>
+            <div
+              style={{
+                position: 'absolute',
+                top: '33.333%',
+                left: 0,
+                right: 0,
+                height: '1px',
+                background: 'var(--crop-guide)',
+                pointerEvents: 'none',
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                top: '66.666%',
+                left: 0,
+                right: 0,
+                height: '1px',
+                background: 'var(--crop-guide)',
+                pointerEvents: 'none',
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                left: '33.333%',
+                top: 0,
+                bottom: 0,
+                width: '1px',
+                background: 'var(--crop-guide)',
+                pointerEvents: 'none',
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                left: '66.666%',
+                top: 0,
+                bottom: 0,
+                width: '1px',
+                background: 'var(--crop-guide)',
+                pointerEvents: 'none',
+              }}
+            />
+          </>
+        )}
+
+        {/* CapCut style Deselect 'X' Button at top-left */}
+        {!isCropMode && (
+          <div
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              useProjectStore.getState().setActiveClipId(null);
+            }}
+            title={t('common.close') || 'Deselect'}
+            style={{
+              position: 'absolute',
+              top: '-13px',
+              left: '-13px',
+              width: '22px',
+              height: '22px',
+              borderRadius: '50%',
+              background: '#ffffff',
+              border: '1.5px solid rgba(0, 0, 0, 0.25)',
+              boxShadow: '0 2px 6px rgba(0, 0, 0, 0.45)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              zIndex: 35,
+              pointerEvents: 'auto',
+              color: '#111827',
+              transition: 'transform 0.12s ease',
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLElement).style.transform = 'scale(1.15)';
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLElement).style.transform = 'scale(1)';
+            }}
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </div>
+        )}
+
+        {/* CapCut style Rotation Button at bottom-center */}
+        {!isCropMode && (
+          <div
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              useProjectStore.getState().rotateActiveClip('cw');
+            }}
+            title={t('transform.rotate_cw') || 'Rotate 90°'}
+            style={{
+              position: 'absolute',
+              bottom: '-32px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: '24px',
+              height: '24px',
+              borderRadius: '50%',
+              background: '#ffffff',
+              border: '1.5px solid rgba(0, 0, 0, 0.25)',
+              boxShadow: '0 2px 6px rgba(0, 0, 0, 0.45)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              zIndex: 35,
+              pointerEvents: 'auto',
+              color: '#111827',
+              transition: 'transform 0.12s ease',
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLElement).style.transform = 'translateX(-50%) scale(1.15)';
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLElement).style.transform = 'translateX(-50%) scale(1)';
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.85.83 6.72 2.24" />
+              <path d="M21 3v6h-6" />
+            </svg>
+          </div>
+        )}
 
         {/* 4 Corner Handles */}
         {/* Top-Left */}
@@ -468,8 +648,8 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             position: 'absolute',
             top: '-12px',
             left: '-12px',
-            width: '28px',
-            height: '28px',
+            width: '26px',
+            height: '26px',
             cursor: 'nwse-resize',
             display: 'flex',
             alignItems: 'center',
@@ -478,17 +658,31 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             pointerEvents: 'auto',
           }}
         >
-          <div
-            style={{
-              width: '14px',
-              height: '14px',
-              borderTop: `3.5px solid ${activeHandle === 'nw' || hoveredHandle === 'nw' ? 'var(--accent)' : 'var(--handle)'}`,
-              borderLeft: `3.5px solid ${activeHandle === 'nw' || hoveredHandle === 'nw' ? 'var(--accent)' : 'var(--handle)'}`,
-              filter: activeHandle === 'nw' || hoveredHandle === 'nw' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
-              transition: 'border-color 0.15s ease, filter 0.15s ease',
-              borderRadius: '1px',
-            }}
-          />
+          {isCropMode ? (
+            <div
+              style={{
+                width: '14px',
+                height: '14px',
+                borderTop: `3.5px solid ${activeHandle === 'nw' || hoveredHandle === 'nw' ? 'var(--accent)' : 'var(--handle)'}`,
+                borderLeft: `3.5px solid ${activeHandle === 'nw' || hoveredHandle === 'nw' ? 'var(--accent)' : 'var(--handle)'}`,
+                filter: activeHandle === 'nw' || hoveredHandle === 'nw' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
+                transition: 'border-color 0.15s ease, filter 0.15s ease',
+                borderRadius: '1px',
+              }}
+            />
+          ) : (
+            <div
+              style={{
+                width: '13px',
+                height: '13px',
+                borderRadius: '50%',
+                background: activeHandle === 'nw' || hoveredHandle === 'nw' ? 'var(--accent)' : '#ffffff',
+                border: '1.5px solid rgba(0, 0, 0, 0.35)',
+                boxShadow: '0 1px 4px rgba(0, 0, 0, 0.6)',
+                transition: 'all 0.15s ease',
+              }}
+            />
+          )}
         </div>
 
         {/* Top-Right */}
@@ -500,8 +694,8 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             position: 'absolute',
             top: '-12px',
             right: '-12px',
-            width: '28px',
-            height: '28px',
+            width: '26px',
+            height: '26px',
             cursor: 'nesw-resize',
             display: 'flex',
             alignItems: 'center',
@@ -510,17 +704,31 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             pointerEvents: 'auto',
           }}
         >
-          <div
-            style={{
-              width: '14px',
-              height: '14px',
-              borderTop: `3.5px solid ${activeHandle === 'ne' || hoveredHandle === 'ne' ? 'var(--accent)' : 'var(--handle)'}`,
-              borderRight: `3.5px solid ${activeHandle === 'ne' || hoveredHandle === 'ne' ? 'var(--accent)' : 'var(--handle)'}`,
-              filter: activeHandle === 'ne' || hoveredHandle === 'ne' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
-              transition: 'border-color 0.15s ease, filter 0.15s ease',
-              borderRadius: '1px',
-            }}
-          />
+          {isCropMode ? (
+            <div
+              style={{
+                width: '14px',
+                height: '14px',
+                borderTop: `3.5px solid ${activeHandle === 'ne' || hoveredHandle === 'ne' ? 'var(--accent)' : 'var(--handle)'}`,
+                borderRight: `3.5px solid ${activeHandle === 'ne' || hoveredHandle === 'ne' ? 'var(--accent)' : 'var(--handle)'}`,
+                filter: activeHandle === 'ne' || hoveredHandle === 'ne' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
+                transition: 'border-color 0.15s ease, filter 0.15s ease',
+                borderRadius: '1px',
+              }}
+            />
+          ) : (
+            <div
+              style={{
+                width: '13px',
+                height: '13px',
+                borderRadius: '50%',
+                background: activeHandle === 'ne' || hoveredHandle === 'ne' ? 'var(--accent)' : '#ffffff',
+                border: '1.5px solid rgba(0, 0, 0, 0.35)',
+                boxShadow: '0 1px 4px rgba(0, 0, 0, 0.6)',
+                transition: 'all 0.15s ease',
+              }}
+            />
+          )}
         </div>
 
         {/* Bottom-Left */}
@@ -532,8 +740,8 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             position: 'absolute',
             bottom: '-12px',
             left: '-12px',
-            width: '28px',
-            height: '28px',
+            width: '26px',
+            height: '26px',
             cursor: 'nesw-resize',
             display: 'flex',
             alignItems: 'center',
@@ -542,17 +750,31 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             pointerEvents: 'auto',
           }}
         >
-          <div
-            style={{
-              width: '14px',
-              height: '14px',
-              borderBottom: `3.5px solid ${activeHandle === 'sw' || hoveredHandle === 'sw' ? 'var(--accent)' : 'var(--handle)'}`,
-              borderLeft: `3.5px solid ${activeHandle === 'sw' || hoveredHandle === 'sw' ? 'var(--accent)' : 'var(--handle)'}`,
-              filter: activeHandle === 'sw' || hoveredHandle === 'sw' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
-              transition: 'border-color 0.15s ease, filter 0.15s ease',
-              borderRadius: '1px',
-            }}
-          />
+          {isCropMode ? (
+            <div
+              style={{
+                width: '14px',
+                height: '14px',
+                borderBottom: `3.5px solid ${activeHandle === 'sw' || hoveredHandle === 'sw' ? 'var(--accent)' : 'var(--handle)'}`,
+                borderLeft: `3.5px solid ${activeHandle === 'sw' || hoveredHandle === 'sw' ? 'var(--accent)' : 'var(--handle)'}`,
+                filter: activeHandle === 'sw' || hoveredHandle === 'sw' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
+                transition: 'border-color 0.15s ease, filter 0.15s ease',
+                borderRadius: '1px',
+              }}
+            />
+          ) : (
+            <div
+              style={{
+                width: '13px',
+                height: '13px',
+                borderRadius: '50%',
+                background: activeHandle === 'sw' || hoveredHandle === 'sw' ? 'var(--accent)' : '#ffffff',
+                border: '1.5px solid rgba(0, 0, 0, 0.35)',
+                boxShadow: '0 1px 4px rgba(0, 0, 0, 0.6)',
+                transition: 'all 0.15s ease',
+              }}
+            />
+          )}
         </div>
 
         {/* Bottom-Right */}
@@ -564,8 +786,8 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             position: 'absolute',
             bottom: '-12px',
             right: '-12px',
-            width: '28px',
-            height: '28px',
+            width: '26px',
+            height: '26px',
             cursor: 'nwse-resize',
             display: 'flex',
             alignItems: 'center',
@@ -574,17 +796,31 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
             pointerEvents: 'auto',
           }}
         >
-          <div
-            style={{
-              width: '14px',
-              height: '14px',
-              borderBottom: `3.5px solid ${activeHandle === 'se' || hoveredHandle === 'se' ? 'var(--accent)' : 'var(--handle)'}`,
-              borderRight: `3.5px solid ${activeHandle === 'se' || hoveredHandle === 'se' ? 'var(--accent)' : 'var(--handle)'}`,
-              filter: activeHandle === 'se' || hoveredHandle === 'se' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
-              transition: 'border-color 0.15s ease, filter 0.15s ease',
-              borderRadius: '1px',
-            }}
-          />
+          {isCropMode ? (
+            <div
+              style={{
+                width: '14px',
+                height: '14px',
+                borderBottom: `3.5px solid ${activeHandle === 'se' || hoveredHandle === 'se' ? 'var(--accent)' : 'var(--handle)'}`,
+                borderRight: `3.5px solid ${activeHandle === 'se' || hoveredHandle === 'se' ? 'var(--accent)' : 'var(--handle)'}`,
+                filter: activeHandle === 'se' || hoveredHandle === 'se' ? 'drop-shadow(0 0 6px var(--accent))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
+                transition: 'border-color 0.15s ease, filter 0.15s ease',
+                borderRadius: '1px',
+              }}
+            />
+          ) : (
+            <div
+              style={{
+                width: '13px',
+                height: '13px',
+                borderRadius: '50%',
+                background: activeHandle === 'se' || hoveredHandle === 'se' ? 'var(--accent)' : '#ffffff',
+                border: '1.5px solid rgba(0, 0, 0, 0.35)',
+                boxShadow: '0 1px 4px rgba(0, 0, 0, 0.6)',
+                transition: 'all 0.15s ease',
+              }}
+            />
+          )}
         </div>
 
         {/* 4 Edge Handles */}
@@ -610,10 +846,10 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
         >
           <div
             style={{
-              width: '32px',
+              width: isCropMode ? '32px' : '18px',
               height: '4px',
               borderRadius: 'var(--r-full)',
-              background: activeHandle === 'n' || hoveredHandle === 'n' ? 'var(--accent)' : 'var(--handle)',
+              background: activeHandle === 'n' || hoveredHandle === 'n' ? 'var(--accent)' : (isCropMode ? 'var(--handle)' : 'rgba(255, 255, 255, 0.9)'),
               boxShadow: activeHandle === 'n' || hoveredHandle === 'n' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
               transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
             }}
@@ -642,10 +878,10 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
         >
           <div
             style={{
-              width: '32px',
+              width: isCropMode ? '32px' : '18px',
               height: '4px',
               borderRadius: 'var(--r-full)',
-              background: activeHandle === 's' || hoveredHandle === 's' ? 'var(--accent)' : 'var(--handle)',
+              background: activeHandle === 's' || hoveredHandle === 's' ? 'var(--accent)' : (isCropMode ? 'var(--handle)' : 'rgba(255, 255, 255, 0.9)'),
               boxShadow: activeHandle === 's' || hoveredHandle === 's' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
               transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
             }}
@@ -675,9 +911,9 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
           <div
             style={{
               width: '4px',
-              height: '32px',
+              height: isCropMode ? '32px' : '18px',
               borderRadius: 'var(--r-full)',
-              background: activeHandle === 'w' || hoveredHandle === 'w' ? 'var(--accent)' : 'var(--handle)',
+              background: activeHandle === 'w' || hoveredHandle === 'w' ? 'var(--accent)' : (isCropMode ? 'var(--handle)' : 'rgba(255, 255, 255, 0.9)'),
               boxShadow: activeHandle === 'w' || hoveredHandle === 'w' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
               transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
             }}
@@ -707,9 +943,9 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
           <div
             style={{
               width: '4px',
-              height: '32px',
+              height: isCropMode ? '32px' : '18px',
               borderRadius: 'var(--r-full)',
-              background: activeHandle === 'e' || hoveredHandle === 'e' ? 'var(--accent)' : 'var(--handle)',
+              background: activeHandle === 'e' || hoveredHandle === 'e' ? 'var(--accent)' : (isCropMode ? 'var(--handle)' : 'rgba(255, 255, 255, 0.9)'),
               boxShadow: activeHandle === 'e' || hoveredHandle === 'e' ? '0 0 8px var(--accent)' : '0 1px 3px rgba(0,0,0,0.6)',
               transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
             }}

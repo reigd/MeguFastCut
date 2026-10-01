@@ -612,7 +612,8 @@ export const TimelineCanvas: React.FC = () => {
       return;
     }
 
-    // 5. Click on empty track area outside clips -> scrub playhead
+    // 5. Click on empty track area outside clips -> scrub playhead & deselect active clip
+    setActiveClipId(null);
     dragStateRef.current = {
       type: 'scrub',
       startX: mouseX,

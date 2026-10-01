@@ -820,7 +820,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
     set((s) => ({ project: { ...s.project, aspect, crop } }));
   },
-  setFitMode: (fitMode) => set((s) => ({ project: { ...s.project, fitMode } })),
+  setFitMode: (fitMode) => {
+    if (fitMode !== 'crop') {
+      set((s) => ({
+        project: {
+          ...s.project,
+          fitMode,
+          crop: { x: 0, y: 0, width: 1, height: 1 },
+        },
+      }));
+    } else {
+      set((s) => ({ project: { ...s.project, fitMode } }));
+    }
+  },
   setCrop: (crop) => set((s) => ({ project: { ...s.project, crop } })),
   setPadding: (padding) => set((s) => ({ project: { ...s.project, padding } })),
 

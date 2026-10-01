@@ -91,6 +91,11 @@ export const ClipStrip: React.FC = () => {
       {/* Horizontal Clips Strip (72px) */}
       <div
         ref={containerRef}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            useProjectStore.getState().setActiveClipId(null);
+          }
+        }}
         onDragOver={handleStripDragOver}
         onDragLeave={handleStripDragLeave}
         onDrop={handleStripDrop}

@@ -9,7 +9,7 @@ import { t } from '../../shared/i18n';
 import { SparkleIcon, FilmIcon } from '../../components/icons';
 
 export const VideoPlayer: React.FC = () => {
-  const { project, sources } = useProjectStore();
+  const { project, sources, activeClipId, setActiveClipId } = useProjectStore();
   const {
     currentTimeMs,
     isPlaying,
@@ -19,7 +19,6 @@ export const VideoPlayer: React.FC = () => {
     isFullscreen,
     seek,
     pause,
-    play,
     proxyStatus,
   } = usePlayerStore();
 
@@ -457,6 +456,7 @@ export const VideoPlayer: React.FC = () => {
   }, [currentClip?.rotate, currentClip?.flipH, currentClip?.flipV]);
 
   const isProxyGenerating = currentSource ? proxyStatus[currentSource.id] === 'generating' : false;
+  const isSelected = !!activeClipId && currentClip?.id === activeClipId;
 
   return (
     <div
@@ -475,9 +475,10 @@ export const VideoPlayer: React.FC = () => {
         overflow: 'hidden',
         userSelect: 'none',
       }}
-      onClick={() => {
-        if (isPlaying) pause();
-        else play();
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          setActiveClipId(null);
+        }
       }}
     >
       {/* Proxy Preparation Indicator */}
@@ -536,6 +537,11 @@ export const VideoPlayer: React.FC = () => {
         className="preview-viewport"
         data-target-w={geometry.targetWidth}
         data-target-h={geometry.targetHeight}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            setActiveClipId(null);
+          }
+        }}
         style={{
           position: 'relative',
           zIndex: 2,
@@ -614,8 +620,29 @@ export const VideoPlayer: React.FC = () => {
           }}
         />
 
+        {/* Click-to-select video area when not selected */}
+        {!isSelected && currentClip && !isGap && (
+          <div
+            onClick={(e) => {
+              e.stopPropagation();
+              setActiveClipId(currentClip.id);
+            }}
+            title={t('editor.select_clip') || 'Select video'}
+            style={{
+              position: 'absolute',
+              left: `${videoBounds.left}px`,
+              top: `${videoBounds.top}px`,
+              width: `${videoBounds.width}px`,
+              height: `${videoBounds.height}px`,
+              zIndex: 15,
+              cursor: 'pointer',
+              pointerEvents: 'auto',
+            }}
+          />
+        )}
+
         {/* Interactive Transform/Crop Overlay on selected video (crop, fit, stretch) */}
-        {!showOriginalAspect && !isGap && (
+        {!showOriginalAspect && !isGap && isSelected && (
           <div
             style={{
               position: 'absolute',

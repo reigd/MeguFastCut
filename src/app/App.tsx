@@ -200,9 +200,14 @@ export const App: React.FC = () => {
       } else if (e.key.toLowerCase() === 'f') {
         e.preventDefault();
         setFullscreen(!isFullscreen);
-      } else if (e.key === 'Escape' && isFullscreen) {
-        e.preventDefault();
-        setFullscreen(false);
+      } else if (e.key === 'Escape') {
+        if (isFullscreen) {
+          e.preventDefault();
+          setFullscreen(false);
+        } else if (activeClipId) {
+          e.preventDefault();
+          useProjectStore.getState().setActiveClipId(null);
+        }
       } else if (e.key.toLowerCase() === 'm') {
         e.preventDefault();
         toggleMute();
