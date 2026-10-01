@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-10-02
+
+### Added
+- Blank canvas project creation with selectable aspect ratio and project media library pool for adding, previewing, and dragging clips to timeline.
+- Quick canvas aspect ratio selector button right on the transport controls bar (16:9, 9:16, 4:3, 1:1, etc.).
+
+### Improved
+- 100% static black canvas: the frame stays firmly locked in place without jumping or resizing during Fit, Stretch, and Crop modes.
+- Independent transform memory: custom position and resize bounds are preserved separately between Fit and Stretch modes.
+- Clicking outside on the preview background now deselects the video and hides selection handles for clean viewing.
+
+### Fixed
+- Keyboard shortcuts now work reliably across all keyboard layouts (Russian, Ukrainian, English, etc.) using physical key scancodes (`e.code`).
+
 ## [1.0.2] - 2026-09-29
 
 ### Added

@@ -18,6 +18,62 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.3',
+    date: '2026-10-02',
+    title: {
+      'en-US': 'Megu FastCut 1.0.3 Release',
+      uk: 'Реліз Megu FastCut 1.0.3',
+    },
+    highlight: {
+      'en-US': 'Static canvas framing across Fit/Stretch/Crop, layout-independent hotkeys, transport aspect ratio selector, and media library.',
+      uk: 'Статичне полотно в режимах Fit/Stretch/Crop, робота гарячих клавіш з будь-якою розкладкою, швидкий селектор пропорцій та медіатека.',
+    },
+    changes: [
+      {
+        kind: 'fixed',
+        text: {
+          'en-US': 'Keyboard shortcuts now work reliably across all keyboard layouts (Russian, Ukrainian, English, etc.) using physical key scancodes.',
+          uk: 'Гарячі клавіші тепер надійно працюють на будь-якій розкладці клавіатури (українській, англійській тощо) за фізичними кодами клавіш.',
+        },
+      },
+      {
+        kind: 'improved',
+        text: {
+          'en-US': '100% static black canvas: the frame stays firmly locked in place without jumping or resizing during Fit, Stretch, and Crop modes.',
+          uk: '100% статичне чорне полотно: кадр надійно зафіксований та не зміщується під час перемикання Fit, Stretch і Crop.',
+        },
+      },
+      {
+        kind: 'improved',
+        text: {
+          'en-US': 'Independent transform memory: custom position and resize bounds are preserved separately between Fit and Stretch modes.',
+          uk: 'Роздільна пам\'ять трансформацій: розміри та позиція відео зберігаються окремо для режимів Fit та Stretch.',
+        },
+      },
+      {
+        kind: 'added',
+        text: {
+          'en-US': 'Quick canvas aspect ratio selector button directly on the transport controls bar (16:9, 9:16, 4:3, 1:1, etc.).',
+          uk: 'Кнопка швидкої зміни пропорцій полотна безпосередньо на панелі керування плеєром (16:9, 9:16, 4:3, 1:1 тощо).',
+        },
+      },
+      {
+        kind: 'added',
+        text: {
+          'en-US': 'Blank canvas project creation and project media library pool with timeline drag-and-drop workflow.',
+          uk: 'Створення проектів із чистим полотном та бібліотека медіафайлів із перетягуванням кліпів на таймлайн.',
+        },
+      },
+      {
+        kind: 'improved',
+        text: {
+          'en-US': 'Clicking outside on the preview background now deselects the video and hides selection handles for clean viewing.',
+          uk: 'Клік по вільному полю прев\'ю скидає виділення відео та приховує рамку для зручного перегляду.',
+        },
+      },
+    ],
+  },
+  {
     version: '1.0.2',
     date: '2026-09-29',
     title: {
