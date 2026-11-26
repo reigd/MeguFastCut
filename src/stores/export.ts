@@ -4,6 +4,11 @@ import { ExportJob, ExportProgress, ExportSource, ExportClip } from '../features
 import { startExport, cancelExport } from '../shared/ipc';
 import { useProjectStore } from './project';
 import { useSettingsStore } from './settings';
+import {
+  getClipTrackIndex,
+  getTimelineTotalDurationMs,
+  isImageSource,
+} from '../shared/media-formats';
 
 export interface ExportState {
   isExportModalOpen: boolean;
@@ -205,12 +210,20 @@ export const useExportStore = create<ExportState>((set) => {
       const { project, sources } = useProjectStore.getState();
       const { defaultOutputDir } = useSettingsStore.getState();
 
-      const enabledClips = project.clips.filter((c) => c.enabled);
+      const enabledClips = project.clips
+        .filter((c) => c.enabled)
+        .sort((a, b) => {
+          const trackDiff = getClipTrackIndex(a) - getClipTrackIndex(b);
+          if (trackDiff !== 0) return trackDiff;
+          return (a.startMs ?? 0) - (b.startMs ?? 0);
+        });
       if (enabledClips.length === 0 || sources.length === 0) {
         throw new Error('No clips available for export');
       }
 
-      const firstSource = sources[0];
+      const firstMainClip = enabledClips.find((c) => getClipTrackIndex(c) === 0) || enabledClips[0];
+      const firstSource =
+        sources.find((s) => s.id === firstMainClip?.sourceId) || sources[0];
       const exportVideo = project.output.exportVideo ?? true;
       const exportAudio = project.output.exportAudio ?? false;
 
@@ -236,36 +249,56 @@ export const useExportStore = create<ExportState>((set) => {
 
       const targetPath = exportVideo ? videoTarget : audioTarget;
 
-      const totalDurationMs = enabledClips.reduce((max, c) => {
-        const cSpeed = c.speed && c.speed > 0 ? c.speed : 1.0;
-        const dur = Math.round((c.outMs - c.inMs) / cSpeed);
-        return Math.max(max, (c.startMs ?? 0) + dur);
-      }, 0);
+      const totalDurationMs = getTimelineTotalDurationMs(enabledClips);
 
       const exportSources: ExportSource[] = sources.map((s) => ({
         id: s.id,
-        path: s.path,
+        path: s.rasterizedPath || s.path,
         filename: s.filename,
         durationMs: s.probe.durationMs,
         width: s.probe.video?.width,
         height: s.probe.video?.height,
         codec: s.probe.video?.codec,
         audioCodec: s.probe.audio?.[0]?.codec,
+        isImage: isImageSource(s),
       }));
 
-      const exportClips: ExportClip[] = enabledClips.map((c) => ({
-        id: c.id,
-        sourceId: c.sourceId,
-        inMs: c.inMs,
-        outMs: c.outMs,
-        enabled: c.enabled,
-        rotate: c.rotate,
-        flipH: c.flipH,
-        flipV: c.flipV,
-        volumeDb: c.volumeDb || 0,
-        speed: c.speed || 1.0,
-        startMs: c.startMs,
-      }));
+      const exportClips: ExportClip[] = enabledClips.map((c) => {
+        const inMs = Math.max(0, Math.round(c.inMs));
+        const outMs = Math.max(inMs + 1, Math.round(c.outMs));
+        const trackIndex = getClipTrackIndex(c);
+        return {
+          id: c.id,
+          sourceId: c.sourceId,
+          inMs,
+          outMs,
+          enabled: c.enabled,
+          rotate: c.rotate,
+          flipH: c.flipH,
+          flipV: c.flipV,
+          volumeDb: c.volumeDb || 0,
+          speed: c.speed || 1.0,
+          sharpness: c.sharpness || 0,
+          startMs: c.startMs !== undefined ? Math.max(0, Math.round(c.startMs)) : undefined,
+          trackIndex,
+          overlayBounds:
+            trackIndex > 0 && c.overlayBounds
+              ? {
+                  x: c.overlayBounds.x,
+                  y: c.overlayBounds.y,
+                  width: c.overlayBounds.width,
+                  height: c.overlayBounds.height,
+                }
+              : undefined,
+        };
+      });
+
+      const activeCanvasBounds =
+        project.fitMode === 'fit'
+          ? project.fitBounds
+          : project.fitMode === 'stretch'
+          ? project.stretchBounds
+          : null;
 
       const job: ExportJob = {
         sources: exportSources,
@@ -283,6 +316,14 @@ export const useExportStore = create<ExportState>((set) => {
           width: project.crop.width,
           height: project.crop.height,
         },
+        canvasBounds: activeCanvasBounds
+          ? {
+              x: activeCanvasBounds.x,
+              y: activeCanvasBounds.y,
+              width: activeCanvasBounds.width,
+              height: activeCanvasBounds.height,
+            }
+          : undefined,
         padding: {
           mode: project.padding.mode,
           color: project.padding.color,

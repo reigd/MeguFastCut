@@ -1,6 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import { ProbeResult } from './types';
 import { ExportJob } from '../features/export/export-types';
+import {
+  ALL_MEDIA_EXTENSIONS,
+  VIDEO_EXTENSIONS,
+  IMAGE_EXTENSIONS,
+  AUDIO_EXTENSIONS,
+} from './media-formats';
 
 export interface Capabilities {
   has_nvenc_h264: boolean;
@@ -61,6 +67,22 @@ export async function getCapabilities(): Promise<Capabilities> {
   }
 }
 
+export async function generateImageProxy(path: string): Promise<string> {
+  try {
+    return await invoke<string>('generate_image_proxy', { path });
+  } catch (err) {
+    throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  }
+}
+
+export async function saveRasterizedSvg(sourcePath: string, pngBase64: string): Promise<string> {
+  try {
+    return await invoke<string>('save_rasterized_svg', { sourcePath, pngBase64 });
+  } catch (err) {
+    throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  }
+}
+
 export async function getClipThumbnail(path: string, timeMs: number): Promise<string> {
   try {
     return await invoke<string>('get_clip_thumbnail', { path, timeMs });
@@ -84,8 +106,20 @@ export async function openVideoFileDialog(): Promise<string[] | null> {
       multiple: true,
       filters: [
         {
-          name: 'Video & Audio files',
-          extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'ts', 'm4v', 'flv', 'mp3', 'wav', 'aac', 'flac', 'm4a'],
+          name: 'All Media (Video, Photo & Audio)',
+          extensions: ALL_MEDIA_EXTENSIONS,
+        },
+        {
+          name: 'Video files',
+          extensions: VIDEO_EXTENSIONS,
+        },
+        {
+          name: 'Photo & Image files',
+          extensions: IMAGE_EXTENSIONS,
+        },
+        {
+          name: 'Audio files',
+          extensions: AUDIO_EXTENSIONS,
         },
         {
           name: 'All files',
@@ -185,11 +219,18 @@ export async function finalizeReplace(tempPath: string, originalPath: string): P
   }
 }
 
-export async function getInitialFile(): Promise<string | null> {
+export type ExternalOpenMode = 'open' | 'add-clips';
+
+export interface ExternalOpenPayload {
+  mode: ExternalOpenMode;
+  paths: string[];
+}
+
+export async function getInitialLaunch(): Promise<ExternalOpenPayload | null> {
   try {
-    return await invoke<string | null>('get_initial_file');
+    return await invoke<ExternalOpenPayload | null>('get_initial_launch');
   } catch (err) {
-    console.error('Failed to get initial file:', err);
+    console.error('Failed to get initial launch request:', err);
     return null;
   }
 }

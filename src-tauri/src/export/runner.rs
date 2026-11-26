@@ -1,6 +1,7 @@
 use super::args::build_export_arguments;
 use super::{ExportJob, ExportProgress};
 use crate::ffmpeg::sidecar::create_ffmpeg_command;
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::process::Stdio;
 use std::sync::Mutex;
@@ -10,10 +11,31 @@ use tauri::{AppHandle, Emitter};
 static ACTIVE_EXPORT_PID: Mutex<Option<u32>> = Mutex::new(None);
 static IS_CANCELLED: Mutex<bool> = Mutex::new(false);
 
-pub fn cancel_export() -> Result<(), String> {
-    *IS_CANCELLED.lock().unwrap() = true;
+const STDERR_RING_CAPACITY: usize = 200;
 
-    if let Some(pid) = *ACTIVE_EXPORT_PID.lock().unwrap() {
+fn set_cancelled(value: bool) {
+    let mut guard = IS_CANCELLED.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = value;
+}
+
+fn is_cancelled() -> bool {
+    *IS_CANCELLED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn set_active_pid(pid: Option<u32>) {
+    let mut guard = ACTIVE_EXPORT_PID.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = pid;
+}
+
+fn take_active_pid() -> Option<u32> {
+    let mut guard = ACTIVE_EXPORT_PID.lock().unwrap_or_else(|e| e.into_inner());
+    guard.take()
+}
+
+pub fn cancel_export() -> Result<(), String> {
+    set_cancelled(true);
+
+    if let Some(pid) = take_active_pid() {
         #[cfg(windows)]
         {
             use std::process::Command;
@@ -21,13 +43,12 @@ pub fn cancel_export() -> Result<(), String> {
                 .args(["/PID", &pid.to_string(), "/F", "/T"])
                 .spawn();
         }
-        *ACTIVE_EXPORT_PID.lock().unwrap() = None;
     }
     Ok(())
 }
 
 pub fn run_export(app: AppHandle, job: ExportJob) -> Result<(), String> {
-    *IS_CANCELLED.lock().unwrap() = false;
+    set_cancelled(false);
 
     // Build FFmpeg command arguments
     let args = build_export_arguments(&job)?;
@@ -42,24 +63,53 @@ pub fn run_export(app: AppHandle, job: ExportJob) -> Result<(), String> {
         .map_err(|e| format!("Failed to spawn FFmpeg: {}", e))?;
 
     let pid = child.id();
-    *ACTIVE_EXPORT_PID.lock().unwrap() = Some(pid);
+    set_active_pid(Some(pid));
 
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let stderr = child.stderr.take();
     let start_time = Instant::now();
     let total_duration_ms = job.total_duration_ms.max(1);
 
     let app_clone = app.clone();
+    let export_audio = job.output.export_audio || job.output.format.starts_with("audio_");
+    let export_video =
+        (job.output.export_video || !export_audio) && !job.output.format.starts_with("audio_");
     let output_path = job.output.output_path.clone();
+    let video_output_path = if export_video {
+        job.output.video_output_path.clone()
+    } else {
+        None
+    };
+    let audio_output_path = if export_audio {
+        job.output.audio_output_path.clone()
+    } else {
+        None
+    };
     let open_folder = job.output.open_folder_after;
 
     std::thread::spawn(move || {
+        // Drain stderr concurrently into a bounded ring buffer to prevent pipe deadlocks
+        let stderr_handle = stderr.map(|err_pipe| {
+            std::thread::spawn(move || {
+                let err_reader = BufReader::new(err_pipe);
+                let mut ring: VecDeque<String> = VecDeque::with_capacity(STDERR_RING_CAPACITY);
+                for line in err_reader.lines().map_while(Result::ok) {
+                    if ring.len() >= STDERR_RING_CAPACITY {
+                        ring.pop_front();
+                    }
+                    ring.push_back(line);
+                }
+                ring
+            })
+        });
+
         let reader = BufReader::new(stdout);
         let mut current_fps = 0.0;
         let mut current_speed = "1.0x".to_string();
         let mut current_out_ms = 0u64;
 
         for line in reader.lines().map_while(Result::ok) {
-            if *IS_CANCELLED.lock().unwrap() {
+            if is_cancelled() {
                 break;
             }
 
@@ -77,7 +127,8 @@ pub fn run_export(app: AppHandle, job: ExportJob) -> Result<(), String> {
                     current_out_ms = ms / 1000;
                 }
             } else if trimmed == "progress=continue" || trimmed == "progress=end" {
-                let percentage = ((current_out_ms as f64 / total_duration_ms as f64) * 100.0).clamp(0.0, 99.5);
+                let percentage =
+                    ((current_out_ms as f64 / total_duration_ms as f64) * 100.0).clamp(0.0, 99.5);
 
                 let elapsed_sec = start_time.elapsed().as_secs();
                 let eta_sec = if percentage > 1.0 {
@@ -104,9 +155,23 @@ pub fn run_export(app: AppHandle, job: ExportJob) -> Result<(), String> {
         }
 
         let exit_status = child.wait();
-        *ACTIVE_EXPORT_PID.lock().unwrap() = None;
+        set_active_pid(None);
 
-        if *IS_CANCELLED.lock().unwrap() {
+        let stderr_lines: Vec<String> = stderr_handle
+            .and_then(|h| h.join().ok())
+            .map(|ring| ring.into_iter().collect())
+            .unwrap_or_default();
+
+        if is_cancelled() {
+            // Remove partial output files on cancellation
+            let _ = std::fs::remove_file(&output_path);
+            if let Some(ref p) = video_output_path {
+                let _ = std::fs::remove_file(p);
+            }
+            if let Some(ref p) = audio_output_path {
+                let _ = std::fs::remove_file(p);
+            }
+
             let _ = app_clone.emit(
                 "export-progress",
                 ExportProgress {
@@ -144,6 +209,22 @@ pub fn run_export(app: AppHandle, job: ExportJob) -> Result<(), String> {
                 }
             }
             Ok(status) => {
+                let tail = stderr_lines
+                    .iter()
+                    .rev()
+                    .filter(|l| !l.trim().is_empty())
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let msg = if tail.is_empty() {
+                    format!("FFmpeg failed with exit code: {:?}", status.code())
+                } else {
+                    format!("FFmpeg failed ({:?}): {}", status.code(), tail)
+                };
                 let _ = app_clone.emit(
                     "export-progress",
                     ExportProgress {
@@ -154,7 +235,7 @@ pub fn run_export(app: AppHandle, job: ExportJob) -> Result<(), String> {
                         total_duration_ms,
                         eta_seconds: 0,
                         status: "error".into(),
-                        error_message: Some(format!("FFmpeg failed with exit code: {:?}", status.code())),
+                        error_message: Some(msg),
                     },
                 );
             }

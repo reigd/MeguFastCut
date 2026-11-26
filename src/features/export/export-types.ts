@@ -7,6 +7,7 @@ export interface ExportSource {
   height?: number;
   codec?: string;
   audioCodec?: string;
+  isImage?: boolean;
 }
 
 export interface ExportClip {
@@ -20,7 +21,10 @@ export interface ExportClip {
   flipV: boolean;
   volumeDb: number;
   speed?: number;
+  sharpness?: number;
   startMs?: number;
+  trackIndex?: number;
+  overlayBounds?: ExportCrop;
 }
 
 export interface ExportAspect {
@@ -77,6 +81,7 @@ export interface ExportJob {
   aspect: ExportAspect;
   fitMode: string;
   crop: ExportCrop;
+  canvasBounds?: ExportCrop;
   padding: ExportPadding;
   output: ExportOutput;
   audio: ExportAudio;

@@ -22,7 +22,7 @@ function loadStoredHeight(): number {
     const val = localStorage.getItem(STORAGE_HEIGHT_KEY);
     if (val) {
       const parsed = parseInt(val, 10);
-      if (!isNaN(parsed) && parsed >= 100 && parsed <= 400) {
+      if (!isNaN(parsed) && parsed >= 100 && parsed <= 460) {
         return parsed;
       }
     }
@@ -43,7 +43,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   toggleSnapping: () => set((s) => ({ snappingEnabled: !s.snappingEnabled })),
 
   setTimelineHeight: (height) => {
-    const clamped = Math.max(100, Math.min(400, height));
+    const clamped = Math.max(100, Math.min(460, height));
     try {
       localStorage.setItem(STORAGE_HEIGHT_KEY, clamped.toString());
     } catch {

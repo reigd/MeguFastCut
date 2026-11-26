@@ -20,7 +20,7 @@ export const Timeline: React.FC = () => {
   const handlePointerMoveResize = (e: React.PointerEvent) => {
     if (!isResizingRef.current) return;
     const deltaY = startYRef.current - e.clientY; // Dragging up increases height
-    const newHeight = Math.max(100, Math.min(360, startHeightRef.current + deltaY));
+    const newHeight = Math.max(100, Math.min(460, startHeightRef.current + deltaY));
     setTimelineHeight(newHeight);
   };
 

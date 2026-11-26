@@ -16,6 +16,11 @@ import {
   MagnetIcon,
 } from '../../components/icons';
 import { t, formatTimecode } from '../../shared/i18n';
+import {
+  getClipDurationMs,
+  getClipStartMs,
+  getTimelineTotalDurationMs,
+} from '../../shared/media-formats';
 
 export const TimelineToolbar: React.FC = () => {
   const { project, activeClipId, splitClip, undo, redo } = useProjectStore();
@@ -29,12 +34,7 @@ export const TimelineToolbar: React.FC = () => {
     fitToProject,
   } = useTimelineStore();
 
-  const totalDurationMs = project.clips.reduce((max, c) => {
-    if (!c.enabled) return max;
-    const cSpeed = c.speed && c.speed > 0 ? c.speed : 1.0;
-    const duration = Math.round((c.outMs - c.inMs) / cSpeed);
-    return Math.max(max, (c.startMs ?? 0) + duration);
-  }, 0);
+  const totalDurationMs = getTimelineTotalDurationMs(project.clips);
 
   const handleSplit = () => {
     if (!activeClipId) return;
@@ -42,8 +42,8 @@ export const TimelineToolbar: React.FC = () => {
     if (!activeClip || !activeClip.enabled) return;
 
     const cSpeed = activeClip.speed && activeClip.speed > 0 ? activeClip.speed : 1.0;
-    const duration = Math.round((activeClip.outMs - activeClip.inMs) / cSpeed);
-    const clipStart = activeClip.startMs ?? 0;
+    const duration = getClipDurationMs(activeClip);
+    const clipStart = getClipStartMs(activeClip, project.clips);
 
     if (currentTimeMs > clipStart && currentTimeMs < clipStart + duration) {
       const splitOffsetMs = currentTimeMs - clipStart;

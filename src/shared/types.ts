@@ -4,6 +4,8 @@ export type Locale = 'en-US' | 'en-GB' | 'uk';
 export type FitMode = 'crop' | 'fit' | 'stretch';
 export type RotateAngle = 0 | 90 | 180 | 270;
 export type ProcessingMode = 'fast' | 'precise' | 'reencode';
+export type PreviewQuality = 'original' | '1080p' | '720p' | '480p';
+export type MediaKind = 'video' | 'image' | 'audio';
 
 export interface CropRect {
   x: number;      // normalized 0..1 or pixel value depending on context
@@ -87,6 +89,7 @@ export interface ProbeResult {
   durationMs: number;
   sizeBytes: number;
   container: string;
+  mediaKind?: MediaKind;
   video?: VideoStreamProbe;
   audio: AudioStreamProbe[];
   keyframes?: number[]; // PTS in ms
@@ -98,6 +101,9 @@ export interface SourceFile {
   filename: string;
   probe: ProbeResult;
   proxyPath?: string;
+  proxyPaths?: Partial<Record<PreviewQuality, string>>;
+  imagePreviewPath?: string;  // Cached PNG preview for non-browser images (HEIC, TIFF, PSD, TGA, EXR, JXL...)
+  rasterizedPath?: string;    // Temp rasterized PNG for SVG sources so FFmpeg can export them cleanly
 }
 
 export interface Clip {
@@ -106,6 +112,8 @@ export interface Clip {
   inMs: number;                // inclusive
   outMs: number;               // exclusive
   startMs?: number;            // timeline start position in ms
+  trackIndex?: number;         // 0 = main track (V1), 1+ = overlay tracks (V2, V3...) stacked above main
+  overlayBounds?: CropRect;    // normalized 0..1 position & size on canvas for overlay clips (trackIndex > 0)
   enabled: boolean;
   rotate: RotateAngle;         // clockwise
   flipH: boolean;
@@ -113,6 +121,7 @@ export interface Clip {
   cropOverride?: CropRect;
   volumeDb: number;            // 0 default
   speed?: number;              // 0.01..999, default 1.0
+  sharpness?: number;          // 0..1 (CAS strength), default 0
 }
 
 export interface Project {
@@ -120,6 +129,8 @@ export interface Project {
   aspect: AspectSetting;
   fitMode: FitMode;
   crop: CropRect;
+  fitBounds?: CropRect | null;
+  stretchBounds?: CropRect | null;
   padding: PadSetting;
   output: OutputSettings;
   audio: AudioSettings;

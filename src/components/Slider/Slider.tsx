@@ -9,6 +9,7 @@ export interface SliderProps {
   snapThreshold?: number;
   unit?: string;
   disabled?: boolean;
+  hideValue?: boolean;
   onChange: (value: number) => void;
   className?: string;
   id?: string;
@@ -23,6 +24,7 @@ export const Slider: React.FC<SliderProps> = ({
   snapThreshold = 0.5,
   unit = '',
   disabled = false,
+  hideValue = false,
   onChange,
   className = '',
   id,
@@ -145,19 +147,21 @@ export const Slider: React.FC<SliderProps> = ({
         />
       </div>
 
-      <span
-        className="timecode"
-        style={{
-          minWidth: '44px',
-          textAlign: 'right',
-          fontSize: 'var(--text-12)',
-          color: 'var(--text-secondary)',
-          fontVariantNumeric: 'tabular-nums',
-        }}
-      >
-        {value > 0 && min < 0 ? `+${value}` : value}
-        {unit}
-      </span>
+      {!hideValue && (
+        <span
+          className="timecode"
+          style={{
+            minWidth: '44px',
+            textAlign: 'right',
+            fontSize: 'var(--text-12)',
+            color: 'var(--text-secondary)',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          {value > 0 && min < 0 ? `+${value}` : value}
+          {unit}
+        </span>
+      )}
     </div>
   );
 };

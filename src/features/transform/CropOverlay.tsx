@@ -2,9 +2,10 @@ import React, { useRef, useState } from 'react';
 import { useProjectStore } from '../../stores/project';
 import { useHistoryStore } from '../../stores/history';
 import { usePlayerStore } from '../../stores/player';
-import { AutoAlignIcon } from '../../components/icons';
+import { AutoAlignIcon, CheckIcon, CropIcon } from '../../components/icons';
 import { t } from '../../shared/i18n';
 import { makeEven } from '../../shared/geometry';
+import { CropRect } from '../../shared/types';
 
 export interface NormalizedBounds {
   x: number;
@@ -21,6 +22,7 @@ interface CropOverlayProps {
   normalizedBounds?: NormalizedBounds;
   sourceWidth?: number;
   sourceHeight?: number;
+  isOverlayMode?: boolean;
   onResizeChange?: (isResizing: boolean) => void;
   onBoundsChange?: (bounds: NormalizedBounds) => void;
 }
@@ -56,7 +58,7 @@ interface HudState {
   height: number;
 }
 
-const SNAP_PRESETS = [
+export const SNAP_PRESETS = [
   { id: '9:16', label: '9:16', ratio: 9 / 16 },
   { id: '4:5', label: '4:5', ratio: 4 / 5 },
   { id: '1:1', label: '1:1', ratio: 1.0 },
@@ -64,6 +66,11 @@ const SNAP_PRESETS = [
   { id: '16:9', label: '16:9', ratio: 16 / 9 },
   { id: '21:9', label: '21:9', ratio: 21 / 9 },
 ];
+
+export function applyCropToProject(): void {
+  usePlayerStore.getState().setCropEditing(false);
+  useHistoryStore.getState().recordChange(useProjectStore.getState().project.clips, 'Crop applied');
+}
 
 export const CropOverlay: React.FC<CropOverlayProps> = ({
   width,
@@ -73,17 +80,20 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
   normalizedBounds,
   sourceWidth,
   sourceHeight,
+  isOverlayMode = false,
   onResizeChange,
   onBoundsChange,
 }) => {
   const { project, setCrop } = useProjectStore();
   const { autoAlignEnabled, toggleAutoAlign } = usePlayerStore();
+  const isCropEditing = usePlayerStore((s) => s.isCropEditing);
   const crop = project.crop;
-  const isCropMode = project.fitMode === 'crop';
+  const isCropMode = !isOverlayMode && project.fitMode === 'crop';
 
   const sessionRef = useRef<DragSession | null>(null);
   const [activeHandle, setActiveHandle] = useState<HandleType | null>(null);
   const [hoveredHandle, setHoveredHandle] = useState<HandleType | null>(null);
+  const [isApplied, setIsApplied] = useState(false);
   const [hudInfo, setHudInfo] = useState<HudState>({
     visible: false,
     label: '',
@@ -96,14 +106,44 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
   const srcW = sourceWidth || 1920;
   const srcH = sourceHeight || 1080;
 
-  // In fit/stretch modes, ensure crop remains full frame
+  const initialCropRef = useRef<CropRect>(project.crop);
+
   React.useEffect(() => {
-    if (!isCropMode) {
-      if (crop.x !== 0 || crop.y !== 0 || crop.width !== 1 || crop.height !== 1) {
-        setCrop({ x: 0, y: 0, width: 1, height: 1 });
-      }
+    if (isCropMode) {
+      initialCropRef.current = { ...project.crop };
     }
-  }, [isCropMode, crop.x, crop.y, crop.width, crop.height, setCrop]);
+  }, [isCropMode]);
+
+  const handleApplyCrop = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    applyCropToProject();
+    usePlayerStore.getState().setCropEditing(false);
+    setIsApplied(true);
+    setTimeout(() => {
+      setIsApplied(false);
+    }, 1500);
+  };
+
+  const handleCancelCrop = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setCrop(initialCropRef.current);
+    usePlayerStore.getState().setCropEditing(false);
+  };
+
+  React.useEffect(() => {
+    if (!isCropMode) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleApplyCrop();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        handleCancelCrop();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isCropMode, project.crop, srcW, srcH]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>, handle: HandleType) => {
     e.stopPropagation();
@@ -238,48 +278,43 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
         return;
       }
 
-      // Handle corner and edge resizing in fit and stretch modes
-      if (project.fitMode === 'fit') {
-        // Fit preserves aspect ratio of video
-        const videoRatio = srcW > 0 && srcH > 0 ? srcW / srcH : 16 / 9;
-        const ratioFactor = session.canvasW / (session.canvasH * videoRatio);
+      // Handle corner and edge resizing in fit, stretch, and overlay modes
+      const isCornerHandle =
+        session.handle === 'nw' ||
+        session.handle === 'ne' ||
+        session.handle === 'sw' ||
+        session.handle === 'se';
+      if (project.fitMode === 'fit' || (isOverlayMode && isCornerHandle && !e.shiftKey)) {
+        const isWest = session.handle.includes('w');
+        const isNorth = session.handle.includes('n');
+        const scaleX = session.startNormW > 0
+          ? (session.startNormW + (isWest ? -ndx : ndx)) / session.startNormW
+          : 1;
+        const scaleY = session.startNormH > 0
+          ? (session.startNormH + (isNorth ? -ndy : ndy)) / session.startNormH
+          : 1;
 
-        let proposedW = session.startNormW;
+        const minScale = Math.max(
+          session.startNormW > 0 ? 0.05 / session.startNormW : 0.05,
+          session.startNormH > 0 ? 0.05 / session.startNormH : 0.05
+        );
+        const scale = Math.max(minScale, Math.abs(scaleX - 1) >= Math.abs(scaleY - 1) ? scaleX : scaleY);
+
+        newNormW = Math.max(0.05, session.startNormW * scale);
+        newNormH = Math.max(0.05, session.startNormH * scale);
 
         if (session.handle === 'se') {
-          proposedW = Math.max(0.05, session.startNormW + ndx);
-          const proposedH = proposedW * ratioFactor;
-          newNormW = proposedW;
-          newNormH = proposedH;
           newNormX = session.startNormX;
           newNormY = session.startNormY;
         } else if (session.handle === 'nw') {
-          const fixedRight = session.startNormX + session.startNormW;
-          const fixedBottom = session.startNormY + session.startNormH;
-          proposedW = Math.max(0.05, session.startNormW - ndx);
-          const proposedH = proposedW * ratioFactor;
-          newNormW = proposedW;
-          newNormH = proposedH;
-          newNormX = fixedRight - newNormW;
-          newNormY = fixedBottom - newNormH;
+          newNormX = session.startNormX + session.startNormW - newNormW;
+          newNormY = session.startNormY + session.startNormH - newNormH;
         } else if (session.handle === 'ne') {
-          const fixedLeft = session.startNormX;
-          const fixedBottom = session.startNormY + session.startNormH;
-          proposedW = Math.max(0.05, session.startNormW + ndx);
-          const proposedH = proposedW * ratioFactor;
-          newNormW = proposedW;
-          newNormH = proposedH;
-          newNormX = fixedLeft;
-          newNormY = fixedBottom - newNormH;
+          newNormX = session.startNormX;
+          newNormY = session.startNormY + session.startNormH - newNormH;
         } else if (session.handle === 'sw') {
-          const fixedRight = session.startNormX + session.startNormW;
-          const fixedTop = session.startNormY;
-          proposedW = Math.max(0.05, session.startNormW - ndx);
-          const proposedH = proposedW * ratioFactor;
-          newNormW = proposedW;
-          newNormH = proposedH;
-          newNormX = fixedRight - newNormW;
-          newNormY = fixedTop;
+          newNormX = session.startNormX + session.startNormW - newNormW;
+          newNormY = session.startNormY;
         }
       } else {
         // Stretch mode: independent width and height scaling
@@ -321,7 +356,7 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
       return;
     }
 
-    // Normalised delta (0..1) relative to container dimensions for crop
+    // Normalised delta relative to container dimensions for crop
     const dx = (e.clientX - session.startX) / session.containerW;
     const dy = (e.clientY - session.startY) / session.containerH;
 
@@ -575,6 +610,10 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
           useProjectStore.getState().setActiveClipId(null);
           return;
         }
+        if (!isCropEditing) {
+          usePlayerStore.getState().setCropEditing(true);
+          return;
+        }
         // Clicking on the dimmed area centers the crop box at that position
         const rect = e.currentTarget.getBoundingClientRect();
         const clickX = (e.clientX - rect.left) / rect.width;
@@ -593,8 +632,9 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
       }}
     >
       {/* Active Selection / Crop Box */}
-      <div
-        onPointerDown={(e) => handleHandleDown(e, 'move')}
+      {(!isCropMode || isCropEditing) && (
+        <div
+          onPointerDown={(e) => handleHandleDown(e, 'move')}
         style={{
           position: 'absolute',
           left: isCropMode ? `${crop.x * 100}%` : 0,
@@ -660,45 +700,47 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
         )}
 
         {/* CapCut style Deselect 'X' Button at top-left */}
-        {!isCropMode && (
-          <div
-            onPointerDown={(e) => {
-              e.stopPropagation();
+        <div
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            if (isCropMode) {
+              handleCancelCrop();
+            } else {
               useProjectStore.getState().setActiveClipId(null);
-            }}
-            title={t('common.close') || 'Deselect'}
-            style={{
-              position: 'absolute',
-              top: '-13px',
-              left: '-13px',
-              width: '22px',
-              height: '22px',
-              borderRadius: '50%',
-              background: '#ffffff',
-              border: '1.5px solid rgba(0, 0, 0, 0.25)',
-              boxShadow: '0 2px 6px rgba(0, 0, 0, 0.45)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              zIndex: 35,
-              pointerEvents: 'auto',
-              color: '#111827',
-              transition: 'transform 0.12s ease',
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLElement).style.transform = 'scale(1.15)';
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLElement).style.transform = 'scale(1)';
-            }}
-          >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </div>
-        )}
+            }
+          }}
+          title={t('common.close') || 'Deselect'}
+          style={{
+            position: 'absolute',
+            top: '-13px',
+            left: '-13px',
+            width: '22px',
+            height: '22px',
+            borderRadius: '50%',
+            background: '#ffffff',
+            border: '1.5px solid rgba(0, 0, 0, 0.25)',
+            boxShadow: '0 2px 6px rgba(0, 0, 0, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            zIndex: 35,
+            pointerEvents: 'auto',
+            color: '#111827',
+            transition: 'transform 0.12s ease',
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLElement).style.transform = 'scale(1.15)';
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLElement).style.transform = 'scale(1)';
+          }}
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </div>
 
         {/* CapCut style Rotation Button at bottom-center */}
         {!isCropMode && (
@@ -927,8 +969,8 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
           )}
         </div>
 
-        {/* 4 Edge Handles (Only in crop or stretch modes, fit mode preserves locked aspect with 4 corners) */}
-        {(isCropMode || project.fitMode === 'stretch') && (
+        {/* 4 Edge Handles (In crop, stretch, or overlay modes) */}
+        {(isCropMode || isOverlayMode || project.fitMode === 'stretch') && (
           <>
             {/* Top Edge */}
             <div
@@ -1060,6 +1102,7 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
           </>
         )}
       </div>
+      )}
 
       {/* Floating HUD Tooltip */}
       {hudInfo.visible && (
@@ -1108,7 +1151,138 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
         </div>
       )}
 
-      {/* Quick Auto-alignment indicator button (bottom-left) */}
+      {/* Floating Crop Action Bar with Apply & Cancel buttons - ALWAYS VISIBLE IN VIEWPORT */}
+      {isCropMode && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: 'absolute',
+            bottom: '16px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '5px 12px',
+            background: 'rgba(18, 18, 22, 0.94)',
+            backdropFilter: 'blur(16px)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 'var(--r-full)',
+            boxShadow: '0 8px 28px rgba(0, 0, 0, 0.65)',
+            zIndex: 50,
+            pointerEvents: 'auto',
+            userSelect: 'none',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span
+            style={{
+              fontSize: 'var(--text-11)',
+              fontWeight: 600,
+              color: 'var(--text-secondary)',
+              padding: '2px 8px',
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {hudInfo.visible
+              ? hudInfo.label
+              : `${makeEven(Math.round(crop.width * srcW))}×${makeEven(Math.round(crop.height * srcH))}`}
+          </span>
+
+          {isCropEditing ? (
+            <button
+              type="button"
+              onClick={handleCancelCrop}
+              title={t('common.cancel') || 'Cancel'}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '4px 10px',
+                background: 'rgba(255, 255, 255, 0.08)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--r-full)',
+                fontSize: 'var(--text-12)',
+                fontWeight: 500,
+                cursor: 'pointer',
+                transition: 'background var(--dur-fast) var(--ease-out)',
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.background = 'rgba(255, 255, 255, 0.16)';
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.background = 'rgba(255, 255, 255, 0.08)';
+              }}
+            >
+              <span>{t('common.cancel') || 'Отмена'}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => usePlayerStore.getState().setCropEditing(true)}
+              title={t('transform.edit_crop') || 'Adjust crop'}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '4px 10px',
+                background: 'rgba(255, 255, 255, 0.08)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--r-full)',
+                fontSize: 'var(--text-12)',
+                fontWeight: 500,
+                cursor: 'pointer',
+                transition: 'background var(--dur-fast) var(--ease-out)',
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.background = 'rgba(255, 255, 255, 0.16)';
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.background = 'rgba(255, 255, 255, 0.08)';
+              }}
+            >
+              <CropIcon size={13} />
+              <span>{t('transform.edit_crop') || 'Настроить'}</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={handleApplyCrop}
+            title={t('common.apply') || 'Apply'}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '4px 14px',
+              background: isApplied ? 'var(--success, #10b981)' : 'var(--accent)',
+              color: '#ffffff',
+              border: 'none',
+              borderRadius: 'var(--r-full)',
+              fontSize: 'var(--text-12)',
+              fontWeight: 600,
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)',
+              transition: 'all var(--dur-fast) var(--ease-out)',
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLElement).style.filter = 'brightness(1.1)';
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLElement).style.filter = 'brightness(1)';
+            }}
+          >
+            <CheckIcon size={14} />
+            <span>{isApplied ? (t('common.applied') || 'Применено') : (t('common.apply') || 'Применить')}</span>
+          </button>
+        </div>
+      )}
+
+      {/* Quick Auto-alignment indicator button (bottom-left, main viewport only) */}
+      {!isOverlayMode && (
       <button
         type="button"
         onClick={(e) => {
@@ -1140,6 +1314,7 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
         <AutoAlignIcon size={13} />
         <span>{t('transform.auto_align')}: {autoAlignEnabled ? 'ON' : 'OFF'}</span>
       </button>
+      )}
     </div>
   );
 };

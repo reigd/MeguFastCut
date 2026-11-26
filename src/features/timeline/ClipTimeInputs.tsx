@@ -2,6 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { useProjectStore } from '../../stores/project';
 import { usePlayerStore } from '../../stores/player';
 import { formatTimecode, t } from '../../shared/i18n';
+import {
+  MAX_IMAGE_CLIP_DURATION_MS,
+  getClipStartMs,
+  getClipTrackIndex,
+  isImageSource,
+} from '../../shared/media-formats';
 
 /** Parse HH:MM:SS or MM:SS or seconds string to milliseconds */
 function parseTimecodeToMs(text: string): number | null {
@@ -61,29 +67,24 @@ export const ClipTimeInputs: React.FC = () => {
   const speed = activeClip.speed && activeClip.speed > 0 ? activeClip.speed : 1.0;
   const rawDurationMs = Math.max(0, activeClip.outMs - activeClip.inMs);
   const effectiveDurationMs = Math.round(rawDurationMs / speed);
+  const isImage = isImageSource(activeSource);
+  const trackIndex = getClipTrackIndex(activeClip);
 
   const getTimelineTimeForSource = (sourceTimeMs: number) => {
-    let acc = 0;
-    for (const c of project.clips) {
-      if (!c.enabled) continue;
-      if (c.id === activeClip.id) {
-        return acc + Math.round((sourceTimeMs - c.inMs) / speed);
-      }
-      acc += Math.round((c.outMs - c.inMs) / (c.speed || 1.0));
-    }
-    return acc;
+    const clipStart = getClipStartMs(activeClip, project.clips);
+    return clipStart + Math.round((sourceTimeMs - activeClip.inMs) / speed);
   };
 
   const commitIn = (valMs: number) => {
-    const clampedIn = Math.max(0, Math.min(activeClip.outMs - 50, valMs));
+    const clampedIn = Math.max(0, Math.min(activeClip.outMs - 50, Math.round(valMs)));
     trimClip(activeClip.id, clampedIn, activeClip.outMs, true);
     setInStr(formatTimecode(clampedIn));
     seek(getTimelineTimeForSource(clampedIn));
   };
 
   const commitOut = (valMs: number) => {
-    const maxDur = activeSource.probe.durationMs;
-    const clampedOut = Math.min(maxDur, Math.max(activeClip.inMs + 50, valMs));
+    const maxDur = isImage ? MAX_IMAGE_CLIP_DURATION_MS : Math.round(activeSource.probe.durationMs);
+    const clampedOut = Math.min(maxDur, Math.max(activeClip.inMs + 50, Math.round(valMs)));
     trimClip(activeClip.id, activeClip.inMs, clampedOut, true);
     setOutStr(formatTimecode(clampedOut));
     seek(getTimelineTimeForSource(clampedOut));
@@ -132,6 +133,24 @@ export const ClipTimeInputs: React.FC = () => {
         userSelect: 'none',
       }}
     >
+      {/* Track Badge when editing an overlay track */}
+      {trackIndex > 0 && (
+        <span
+          className="timecode"
+          style={{
+            fontSize: 'var(--text-10)',
+            fontWeight: 700,
+            padding: '1px 6px',
+            borderRadius: 'var(--r-sm)',
+            background: 'var(--accent-muted)',
+            color: 'var(--accent)',
+            border: '1px solid var(--accent)',
+          }}
+        >
+          V{trackIndex + 1}
+        </span>
+      )}
+
       {/* In Input */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
         <span style={{ fontSize: 'var(--text-11)', color: 'var(--text-muted)', fontWeight: 600 }}>
@@ -149,9 +168,9 @@ export const ClipTimeInputs: React.FC = () => {
             else setInStr(formatTimecode(activeClip.inMs));
           }}
           style={{
-            width: '78px',
-            height: '22px',
-            padding: '0 4px',
+            width: '88px',
+            height: '24px',
+            padding: '0 5px',
             background: 'var(--bg-inset)',
             border: '1px solid var(--border-subtle)',
             borderRadius: 'var(--r-sm)',
@@ -179,9 +198,9 @@ export const ClipTimeInputs: React.FC = () => {
             else setOutStr(formatTimecode(activeClip.outMs));
           }}
           style={{
-            width: '78px',
-            height: '22px',
-            padding: '0 4px',
+            width: '88px',
+            height: '24px',
+            padding: '0 5px',
             background: 'var(--bg-inset)',
             border: '1px solid var(--border-subtle)',
             borderRadius: 'var(--r-sm)',

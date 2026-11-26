@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { usePlayerStore } from '../../stores/player';
 import { useProjectStore } from '../../stores/project';
+import { PreviewQuality } from '../../shared/types';
+import { proxyStatusKey } from '../../shared/proxy-manager';
+import { getTimelineTotalDurationMs } from '../../shared/media-formats';
 import { formatTimecode, t } from '../../shared/i18n';
 import { Slider } from '../../components/Slider/Slider';
 import {
@@ -20,6 +23,9 @@ import {
   FullscreenExitIcon,
   AspectRatioIcon,
   AutoAlignIcon,
+  MonitorIcon,
+  ChevronDownIcon,
+  CheckIcon,
 } from '../../components/icons';
 
 interface AspectPresetItem {
@@ -41,6 +47,18 @@ const CANVAS_ASPECTS: AspectPresetItem[] = [
   { id: 'original', label: 'Original', sublabel: 'Source aspect', w: 16, h: 10, ratio: undefined },
 ];
 
+const PREVIEW_QUALITY_OPTIONS: {
+  value: PreviewQuality;
+  labelKey?: string;
+  staticLabel?: string;
+  descKey: string;
+}[] = [
+  { value: 'original', labelKey: 'player.quality_original', descKey: 'player.quality_original_desc' },
+  { value: '1080p', staticLabel: '1080p', descKey: 'player.quality_1080p_desc' },
+  { value: '720p', staticLabel: '720p', descKey: 'player.quality_720p_desc' },
+  { value: '480p', staticLabel: '480p', descKey: 'player.quality_480p_desc' },
+];
+
 export const TransportControls: React.FC = () => {
   const { project, sources, setAspect } = useProjectStore();
   const {
@@ -52,6 +70,8 @@ export const TransportControls: React.FC = () => {
     showOriginalAspect,
     isFullscreen,
     autoAlignEnabled,
+    previewQuality,
+    proxyStatus,
     togglePlay,
     pause,
     seek,
@@ -63,28 +83,47 @@ export const TransportControls: React.FC = () => {
     toggleOriginalAspect,
     toggleAutoAlign,
     setFullscreen,
+    setPreviewQuality,
   } = usePlayerStore();
 
   const [showVolumeSlider, setShowVolumeSlider] = useState(false);
   const [showAspectMenu, setShowAspectMenu] = useState(false);
+  const [showQualityMenu, setShowQualityMenu] = useState(false);
   const aspectMenuRef = React.useRef<HTMLDivElement>(null);
+  const qualityMenuRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!showAspectMenu) return;
+    if (!showAspectMenu && !showQualityMenu) return;
     const handleClickOutside = (e: MouseEvent) => {
       if (aspectMenuRef.current && !aspectMenuRef.current.contains(e.target as Node)) {
         setShowAspectMenu(false);
       }
+      if (qualityMenuRef.current && !qualityMenuRef.current.contains(e.target as Node)) {
+        setShowQualityMenu(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Escape' || e.key === 'Escape') {
+        setShowAspectMenu(false);
+        setShowQualityMenu(false);
+      }
     };
     document.addEventListener('pointerdown', handleClickOutside);
-    return () => document.removeEventListener('pointerdown', handleClickOutside);
-  }, [showAspectMenu]);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showAspectMenu, showQualityMenu]);
 
-  // Total project duration taking per-clip speeds and enabled states into account
-  const totalDurationMs = project.clips.reduce(
-    (sum, c) => (c.enabled ? sum + Math.round((c.outMs - c.inMs) / (c.speed || 1.0)) : sum),
-    0
+  const isAnyProxyGenerating = sources.some(
+    (s) => proxyStatus[proxyStatusKey(s.id, previewQuality)] === 'generating'
   );
+  const activeQualityLabel =
+    previewQuality === 'original' ? t('player.quality_original') : previewQuality;
+
+  // Total project duration across all tracks (main + overlays)
+  const totalDurationMs = getTimelineTotalDurationMs(project.clips);
 
   // Keep playhead within bounds if duration shrinks
   useEffect(() => {
@@ -252,7 +291,10 @@ export const TransportControls: React.FC = () => {
         <div style={{ position: 'relative' }} ref={aspectMenuRef}>
           <button
             type="button"
-            onClick={() => setShowAspectMenu((prev) => !prev)}
+            onClick={() => {
+              setShowQualityMenu(false);
+              setShowAspectMenu((prev) => !prev);
+            }}
             title={t('transform.aspect_ratio') || 'Canvas aspect ratio'}
             className={`transport-btn ${showAspectMenu ? 'active' : ''}`}
             style={{
@@ -362,6 +404,169 @@ export const TransportControls: React.FC = () => {
                   </button>
                 );
               })}
+            </div>
+          )}
+        </div>
+
+        {/* Preview Quality Selector Button */}
+        <div style={{ position: 'relative' }} ref={qualityMenuRef}>
+          <button
+            type="button"
+            onClick={() => {
+              setShowAspectMenu(false);
+              setShowQualityMenu((prev) => !prev);
+            }}
+            title={t('player.preview_quality_tooltip')}
+            aria-label={t('player.preview_quality')}
+            aria-expanded={showQualityMenu}
+            aria-haspopup="menu"
+            data-testid="preview-quality-btn"
+            className={`transport-btn ${showQualityMenu ? 'active' : ''}`}
+            style={{
+              width: 'auto',
+              minWidth: '72px',
+              height: '24px',
+              padding: '0 8px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              fontWeight: 600,
+              fontSize: 'var(--text-11)',
+              borderRadius: 'var(--r-sm)',
+              border: showQualityMenu ? '1px solid var(--accent)' : '1px solid var(--border-subtle)',
+              background: showQualityMenu ? 'var(--accent-muted)' : 'var(--bg-inset)',
+              color: showQualityMenu ? 'var(--accent)' : 'var(--text-primary)',
+              cursor: 'pointer',
+              userSelect: 'none',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+              transition: 'all var(--dur-fast) var(--ease-out)',
+            }}
+          >
+            <MonitorIcon size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+            <span>{activeQualityLabel}</span>
+            {isAnyProxyGenerating && (
+              <span
+                style={{
+                  width: '6px',
+                  height: '6px',
+                  borderRadius: 'var(--r-full)',
+                  background: 'var(--accent)',
+                  flexShrink: 0,
+                }}
+              />
+            )}
+            <ChevronDownIcon size={11} style={{ opacity: 0.75, flexShrink: 0 }} />
+          </button>
+
+          {showQualityMenu && (
+            <div
+              role="menu"
+              aria-label={t('player.preview_quality')}
+              style={{
+                position: 'absolute',
+                bottom: 'calc(100% + 8px)',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                minWidth: '240px',
+                maxWidth: '280px',
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-strong)',
+                borderRadius: 'var(--r-lg)',
+                boxShadow: 'var(--shadow-3)',
+                padding: 'var(--space-1)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '2px',
+                zIndex: 100,
+                backdropFilter: 'blur(16px)',
+              }}
+            >
+              <div
+                style={{
+                  padding: '5px 8px',
+                  fontSize: 'var(--text-11)',
+                  fontWeight: 600,
+                  color: 'var(--text-secondary)',
+                  borderBottom: '1px solid var(--border-subtle)',
+                  marginBottom: '2px',
+                }}
+              >
+                {t('player.preview_quality')}
+              </div>
+
+              {PREVIEW_QUALITY_OPTIONS.map((opt) => {
+                const isActive = previewQuality === opt.value;
+                const label = opt.labelKey ? t(opt.labelKey) : opt.staticLabel || opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={isActive}
+                    data-testid={`preview-quality-${opt.value}`}
+                    onClick={() => {
+                      setPreviewQuality(opt.value);
+                      setShowQualityMenu(false);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 'var(--space-2)',
+                      padding: '6px 8px',
+                      borderRadius: 'var(--r-md)',
+                      background: isActive ? 'var(--accent-muted)' : 'transparent',
+                      border: 'none',
+                      color: isActive ? 'var(--accent)' : 'var(--text-primary)',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'background var(--dur-fast) var(--ease-out)',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isActive) (e.currentTarget as HTMLElement).style.background = 'var(--bg-surface)';
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isActive) (e.currentTarget as HTMLElement).style.background = 'transparent';
+                    }}
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', minWidth: 0 }}>
+                      <span
+                        style={{
+                          fontSize: 'var(--text-12)',
+                          fontWeight: isActive ? 600 : 500,
+                          lineHeight: 1.25,
+                        }}
+                      >
+                        {label}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 'var(--text-11)',
+                          color: 'var(--text-secondary)',
+                          lineHeight: 1.25,
+                        }}
+                      >
+                        {t(opt.descKey)}
+                      </span>
+                    </div>
+                    {isActive && <CheckIcon size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />}
+                  </button>
+                );
+              })}
+
+              <div
+                style={{
+                  marginTop: '2px',
+                  padding: '6px 8px 4px',
+                  borderTop: '1px solid var(--border-subtle)',
+                  fontSize: 'var(--text-11)',
+                  color: 'var(--text-secondary)',
+                  lineHeight: 1.35,
+                }}
+              >
+                {t('player.preview_quality_export_note')}
+              </div>
             </div>
           )}
         </div>

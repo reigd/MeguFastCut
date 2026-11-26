@@ -14,6 +14,8 @@ pub struct ExportSource {
     pub height: Option<u32>,
     pub codec: Option<String>,
     pub audio_codec: Option<String>,
+    #[serde(default)]
+    pub is_image: bool,
 }
 
 fn default_speed() -> f64 {
@@ -28,14 +30,20 @@ pub struct ExportClip {
     pub in_ms: u64,
     pub out_ms: u64,
     pub enabled: bool,
-    pub rotate: u32,       // 0, 90, 180, 270
+    pub rotate: u32, // 0, 90, 180, 270
     pub flip_h: bool,
     pub flip_v: bool,
     pub volume_db: f64,
     #[serde(default = "default_speed")]
     pub speed: f64,
     #[serde(default)]
+    pub sharpness: f64, // 0.0..=1.0 (CAS Contrast Adaptive Sharpening strength)
+    #[serde(default)]
     pub start_ms: Option<u64>,
+    #[serde(default)]
+    pub track_index: u32, // 0 = main track (V1), 1+ = overlay tracks (V2, V3...)
+    #[serde(default)]
+    pub overlay_bounds: Option<ExportCrop>, // normalized 0..1 position & size on target canvas
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +125,8 @@ pub struct ExportJob {
     pub aspect: ExportAspect,
     pub fit_mode: String,
     pub crop: ExportCrop,
+    #[serde(default)]
+    pub canvas_bounds: Option<ExportCrop>,
     pub padding: ExportPadding,
     pub output: ExportOutput,
     pub audio: ExportAudio,

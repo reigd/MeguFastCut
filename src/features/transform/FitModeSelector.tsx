@@ -2,11 +2,15 @@ import React from 'react';
 import { useProjectStore } from '../../stores/project';
 import { FitMode } from '../../shared/types';
 import { Slider } from '../../components/Slider/Slider';
-import { BlurIcon, PaletteIcon, AlertIcon } from '../../components/icons';
+import { BlurIcon, PaletteIcon, AlertIcon, CropIcon, CheckIcon } from '../../components/icons';
+import { usePlayerStore } from '../../stores/player';
+import { applyCropToProject } from './CropOverlay';
 import { t } from '../../shared/i18n';
 
 export const FitModeSelector: React.FC = () => {
-  const { project, setFitMode, setPadding } = useProjectStore();
+  const { project, setFitMode, setPadding, setActiveClipId } = useProjectStore();
+  const isCropEditing = usePlayerStore((s) => s.isCropEditing);
+  const setCropEditing = usePlayerStore((s) => s.setCropEditing);
   const currentMode = project.fitMode;
   const padding = project.padding;
 
@@ -40,7 +44,19 @@ export const FitModeSelector: React.FC = () => {
               <button
                 key={m.id}
                 type="button"
-                onClick={() => setFitMode(m.id)}
+                onClick={() => {
+                  setFitMode(m.id);
+                  if (m.id === 'crop') {
+                    const activeId = useProjectStore.getState().activeClipId;
+                    if (!activeId) {
+                      const firstClip = useProjectStore.getState().project.clips[0];
+                      if (firstClip) setActiveClipId(firstClip.id);
+                    }
+                    setCropEditing(true);
+                  } else {
+                    setCropEditing(false);
+                  }
+                }}
                 style={{
                   height: '28px',
                   background: isSelected ? 'var(--bg-surface)' : 'transparent',
@@ -59,6 +75,76 @@ export const FitModeSelector: React.FC = () => {
             );
           })}
         </div>
+
+        {/* Crop Action Controls (Apply & Adjust) */}
+        {currentMode === 'crop' && (
+          <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-1)' }}>
+            <button
+              type="button"
+              onClick={() => {
+                applyCropToProject();
+                setCropEditing(false);
+              }}
+              style={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 'var(--space-2)',
+                padding: '6px 12px',
+                background: 'var(--accent)',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: 'var(--r-md)',
+                fontSize: 'var(--text-12)',
+                fontWeight: 600,
+                cursor: 'pointer',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)',
+                transition: 'filter var(--dur-fast) var(--ease-out)',
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.filter = 'brightness(1.1)';
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.filter = 'brightness(1)';
+              }}
+            >
+              <CheckIcon size={14} />
+              <span>{t('common.apply') || 'Применить'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const activeId = useProjectStore.getState().activeClipId;
+                if (!activeId) {
+                  const firstClip = useProjectStore.getState().project.clips[0];
+                  if (firstClip) setActiveClipId(firstClip.id);
+                }
+                setCropEditing(!isCropEditing);
+              }}
+              style={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 'var(--space-2)',
+                padding: '6px 12px',
+                background: isCropEditing ? 'rgba(99, 102, 241, 0.12)' : 'var(--bg-inset)',
+                border: `1px solid ${isCropEditing ? 'var(--accent)' : 'var(--border-subtle)'}`,
+                borderRadius: 'var(--r-md)',
+                color: isCropEditing ? 'var(--accent)' : 'var(--text-primary)',
+                fontSize: 'var(--text-12)',
+                fontWeight: 500,
+                cursor: 'pointer',
+                transition: 'all var(--dur-fast) var(--ease-out)',
+              }}
+            >
+              <CropIcon size={14} />
+              <span>{isCropEditing ? t('transform.editing_crop') : t('transform.edit_crop')}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Stretch Warning */}

@@ -1,4 +1,5 @@
 import { SourceFile, Clip } from './types';
+import { getClipTrackIndex, isImageSource } from './media-formats';
 
 export interface PropertyDiff {
   property: string;
@@ -17,7 +18,16 @@ export function checkClipsCompatibility(
   sources: SourceFile[]
 ): CompatibilityCheck {
   const enabledClips = clips.filter((c) => c.enabled);
+  const hasOverlays = enabledClips.some((c) => getClipTrackIndex(c) > 0);
+  const hasImages = enabledClips.some((c) => {
+    const src = sources.find((s) => s.id === c.sourceId);
+    return isImageSource(src);
+  });
+
   if (enabledClips.length <= 1) {
+    if (hasOverlays || hasImages) {
+      return { isCompatible: false, mismatchCount: 1, diffs: [] };
+    }
     return { isCompatible: true, mismatchCount: 0, diffs: [] };
   }
 
@@ -28,6 +38,9 @@ export function checkClipsCompatibility(
     .filter((s): s is SourceFile => s !== undefined);
 
   if (usedSources.length <= 1) {
+    if (hasOverlays || hasImages) {
+      return { isCompatible: false, mismatchCount: 1, diffs: [] };
+    }
     return { isCompatible: true, mismatchCount: 0, diffs: [] };
   }
 

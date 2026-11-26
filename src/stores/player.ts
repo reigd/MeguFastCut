@@ -1,6 +1,10 @@
 import { create } from 'zustand';
+import { PreviewQuality } from '../shared/types';
 
 const STORAGE_AUTO_ALIGN_KEY = 'megu-fastcut-auto-align';
+const STORAGE_PREVIEW_QUALITY_KEY = 'megu-fastcut-preview-quality';
+
+const VALID_PREVIEW_QUALITIES: PreviewQuality[] = ['original', '1080p', '720p', '480p'];
 
 function loadStoredAutoAlign(): boolean {
   try {
@@ -14,6 +18,18 @@ function loadStoredAutoAlign(): boolean {
   return true;
 }
 
+function loadStoredPreviewQuality(): PreviewQuality {
+  try {
+    const val = localStorage.getItem(STORAGE_PREVIEW_QUALITY_KEY) as PreviewQuality | null;
+    if (val && VALID_PREVIEW_QUALITIES.includes(val)) {
+      return val;
+    }
+  } catch {
+    // ignore
+  }
+  return 'original';
+}
+
 interface PlayerState {
   currentTimeMs: number;
   isPlaying: boolean;
@@ -23,7 +39,9 @@ interface PlayerState {
   showOriginalAspect: boolean;
   isFullscreen: boolean;
   autoAlignEnabled: boolean;
+  isCropEditing: boolean;
   activeClipIndex: number;
+  previewQuality: PreviewQuality;
   proxyStatus: Record<string, 'ready' | 'generating' | 'error'>;
 
   // Actions
@@ -38,10 +56,12 @@ interface PlayerState {
   toggleLoop: () => void;
   toggleOriginalAspect: () => void;
   setFullscreen: (fullscreen: boolean) => void;
+  setCropEditing: (editing: boolean) => void;
   toggleAutoAlign: () => void;
   setAutoAlign: (enabled: boolean) => void;
   setActiveClipIndex: (idx: number) => void;
-  setProxyStatus: (sourceId: string, status: 'ready' | 'generating' | 'error') => void;
+  setPreviewQuality: (quality: PreviewQuality) => void;
+  setProxyStatus: (key: string, status: 'ready' | 'generating' | 'error') => void;
 }
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
@@ -53,7 +73,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   showOriginalAspect: false,
   isFullscreen: false,
   autoAlignEnabled: loadStoredAutoAlign(),
+  isCropEditing: false,
   activeClipIndex: 0,
+  previewQuality: loadStoredPreviewQuality(),
   proxyStatus: {},
 
   play: () => set({ isPlaying: true }),
@@ -84,6 +106,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   toggleLoop: () => set((s) => ({ isLooping: !s.isLooping })),
   toggleOriginalAspect: () => set((s) => ({ showOriginalAspect: !s.showOriginalAspect })),
   setFullscreen: (isFullscreen: boolean) => set({ isFullscreen }),
+  setCropEditing: (isCropEditing: boolean) => set({ isCropEditing }),
   toggleAutoAlign: () =>
     set((s) => {
       const next = !s.autoAlignEnabled;
@@ -104,9 +127,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
   setActiveClipIndex: (activeClipIndex: number) => set({ activeClipIndex }),
 
-  setProxyStatus: (sourceId: string, status: 'ready' | 'generating' | 'error') => {
+  setPreviewQuality: (previewQuality: PreviewQuality) => {
+    try {
+      localStorage.setItem(STORAGE_PREVIEW_QUALITY_KEY, previewQuality);
+    } catch {
+      // ignore
+    }
+    set({ previewQuality });
+  },
+
+  setProxyStatus: (key: string, status: 'ready' | 'generating' | 'error') => {
     set((s) => ({
-      proxyStatus: { ...s.proxyStatus, [sourceId]: status },
+      proxyStatus: { ...s.proxyStatus, [key]: status },
     }));
   },
 }));

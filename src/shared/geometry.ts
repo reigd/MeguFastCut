@@ -104,7 +104,8 @@ export function computeGeometry(
   aspect: AspectSetting,
   fitMode: FitMode,
   crop: CropRect,
-  resMode: 'auto' | '2160p' | '1440p' | '1080p' | '720p' | '480p' = 'auto'
+  resMode: 'auto' | '2160p' | '1440p' | '1080p' | '720p' | '480p' = 'auto',
+  canvasBounds?: CropRect | null
 ): GeometryResult {
   const targetRatio = resolveAspectRatio(aspect, srcW, srcH);
   const { targetW, targetH } = calculateTargetDimensions(srcW, srcH, targetRatio, resMode);
@@ -125,42 +126,44 @@ export function computeGeometry(
   let padY = 0;
 
   if (fitMode === 'stretch') {
-    if (crop && crop.width > 0 && crop.height > 0 && (crop.width < 1 || crop.height < 1 || crop.x > 0 || crop.y > 0)) {
-      sourceCropW = makeEven(crop.width * srcW);
-      sourceCropH = makeEven(crop.height * srcH);
-      sourceCropX = makeEven(crop.x * srcW);
-      sourceCropY = makeEven(crop.y * srcH);
-    }
-    scaledWidth = targetW;
-    scaledHeight = targetH;
-  } else if (fitMode === 'fit') {
-    // Letterbox / Pillarbox inside target
-    let effectiveSrcW = srcW;
-    let effectiveSrcH = srcH;
-    if (crop && crop.width > 0 && crop.height > 0 && (crop.width < 1 || crop.height < 1 || crop.x > 0 || crop.y > 0)) {
-      sourceCropW = makeEven(crop.width * srcW);
-      sourceCropH = makeEven(crop.height * srcH);
-      sourceCropX = makeEven(crop.x * srcW);
-      sourceCropY = makeEven(crop.y * srcH);
-      effectiveSrcW = sourceCropW;
-      effectiveSrcH = sourceCropH;
-    }
-    const srcRatio = effectiveSrcW / effectiveSrcH;
-    if (srcRatio > targetRatio) {
-      // Fit to width, pillarbox top/bottom
-      scaledWidth = targetW;
-      scaledHeight = makeEven(targetW / srcRatio);
-      offsetY = makeEven((targetH - scaledHeight) / 2);
+    if (canvasBounds && canvasBounds.width > 0 && canvasBounds.height > 0) {
+      scaledWidth = Math.max(2, makeEven(canvasBounds.width * targetW));
+      scaledHeight = Math.max(2, makeEven(canvasBounds.height * targetH));
+      offsetX = makeEven(canvasBounds.x * targetW);
+      offsetY = makeEven(canvasBounds.y * targetH);
+      padW = targetW;
+      padH = targetH;
+      padX = Math.max(0, offsetX);
+      padY = Math.max(0, offsetY);
     } else {
-      // Fit to height, letterbox left/right
+      scaledWidth = targetW;
       scaledHeight = targetH;
-      scaledWidth = makeEven(targetH * srcRatio);
-      offsetX = makeEven((targetW - scaledWidth) / 2);
+    }
+  } else if (fitMode === 'fit') {
+    if (canvasBounds && canvasBounds.width > 0 && canvasBounds.height > 0) {
+      scaledWidth = Math.max(2, makeEven(canvasBounds.width * targetW));
+      scaledHeight = Math.max(2, makeEven(canvasBounds.height * targetH));
+      offsetX = makeEven(canvasBounds.x * targetW);
+      offsetY = makeEven(canvasBounds.y * targetH);
+    } else {
+      // Letterbox / Pillarbox inside target
+      const srcRatio = srcW / srcH;
+      if (srcRatio > targetRatio) {
+        // Fit to width, pillarbox top/bottom
+        scaledWidth = targetW;
+        scaledHeight = makeEven(targetW / srcRatio);
+        offsetY = makeEven((targetH - scaledHeight) / 2);
+      } else {
+        // Fit to height, letterbox left/right
+        scaledHeight = targetH;
+        scaledWidth = makeEven(targetH * srcRatio);
+        offsetX = makeEven((targetW - scaledWidth) / 2);
+      }
     }
     padW = targetW;
     padH = targetH;
-    padX = offsetX;
-    padY = offsetY;
+    padX = Math.max(0, offsetX);
+    padY = Math.max(0, offsetY);
   } else if (fitMode === 'crop') {
     // Crop mode: center crop or interactive crop rect
     const srcRatio = srcW / srcH;
@@ -224,4 +227,76 @@ export function buildCssTransform(
     parts.push(`scale(${scaleX}, ${scaleY})`);
   }
   return parts.length > 0 ? parts.join(' ') : 'none';
+}
+
+/**
+ * Computes default centered overlay bounding rect (normalized 0..1 on target canvas)
+ * preserving the overlay's exact aspect ratio (after rotation).
+ * Matches Rust `default_overlay_bounds` in `src-tauri/src/export/args.rs`.
+ */
+export function computeDefaultOverlayBounds(
+  srcW: number,
+  srcH: number,
+  canvasW: number,
+  canvasH: number,
+  rotate: RotateAngle = 0,
+  maxFraction: number = 0.6
+): CropRect {
+  const safeSrcW = Math.max(1, srcW || 640);
+  const safeSrcH = Math.max(1, srcH || 360);
+  const effW = rotate === 90 || rotate === 270 ? safeSrcH : safeSrcW;
+  const effH = rotate === 90 || rotate === 270 ? safeSrcW : safeSrcH;
+
+  const safeCanvasW = Math.max(1, canvasW || 1920);
+  const safeCanvasH = Math.max(1, canvasH || 1080);
+
+  const srcRatio = effW / effH;
+  const canvasRatio = safeCanvasW / safeCanvasH;
+  const frac = Math.max(0.05, Math.min(1, maxFraction));
+
+  let normW: number;
+  let normH: number;
+  if (srcRatio > canvasRatio) {
+    normW = frac;
+    normH = (normW * canvasRatio) / srcRatio;
+  } else {
+    normH = frac;
+    normW = (normH * srcRatio) / canvasRatio;
+  }
+
+  return {
+    x: (1 - normW) / 2,
+    y: (1 - normH) / 2,
+    width: normW,
+    height: normH,
+  };
+}
+
+export interface OverlayPixelRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Pixel-to-pixel overlay rectangle calculation matching Rust `overlay=x=...:y=...` and `scale=w=...:h=...`.
+ * Width and height are guaranteed even and >= 2.
+ */
+export function computeOverlayPixelRect(
+  bounds: CropRect,
+  canvasW: number,
+  canvasH: number
+): OverlayPixelRect {
+  const safeW = Number.isFinite(bounds.width) && bounds.width > 0 ? bounds.width : 0.5;
+  const safeH = Number.isFinite(bounds.height) && bounds.height > 0 ? bounds.height : 0.5;
+  const safeX = Number.isFinite(bounds.x) ? bounds.x : 0;
+  const safeY = Number.isFinite(bounds.y) ? bounds.y : 0;
+  const maxW = Math.max(2, canvasW * 4);
+  const maxH = Math.max(2, canvasH * 4);
+  const width = Math.max(2, Math.min(maxW, makeEven(safeW * canvasW)));
+  const height = Math.max(2, Math.min(maxH, makeEven(safeH * canvasH)));
+  const x = Math.round(safeX * canvasW);
+  const y = Math.round(safeY * canvasH);
+  return { x, y, width, height };
 }

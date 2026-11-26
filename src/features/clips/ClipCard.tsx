@@ -5,9 +5,17 @@ import { usePlayerStore } from '../../stores/player';
 import { getClipThumbnail } from '../../shared/ipc';
 import { truncateMiddle, getSourceColor } from '../../shared/string-utils';
 import { formatTimecode } from '../../shared/i18n';
+import {
+  getClipStartMs,
+  getClipTrackIndex,
+  isBrowserNativeImagePath,
+  isImageSource,
+  safeConvertFileSrc,
+} from '../../shared/media-formats';
 import { ClipContextMenu, ContextMenuPosition } from './ClipContextMenu';
 import {
   FilmIcon,
+  ImageIcon,
   CloseIcon,
   EyeIcon,
   EyeOffIcon,
@@ -46,14 +54,40 @@ export const ClipCard: React.FC<ClipCardProps> = ({
   const speed = clip.speed ?? 1.0;
   const rawDurationMs = clip.outMs - clip.inMs;
   const effectiveDurationMs = Math.round(rawDurationMs / speed);
+  const isImage = isImageSource(source);
+  const trackIndex = getClipTrackIndex(clip);
 
-  // Fetch thumbnail for the clip's start point (debounced to avoid FFmpeg process storm during timeline dragging)
+  // Fetch thumbnail (direct WebView2 URL for native images, FFmpeg thumb for videos & exotic images)
   useEffect(() => {
     let active = true;
     if (!source?.path) return;
 
+    if (isImage) {
+      if (source.imagePreviewPath) {
+        const url = safeConvertFileSrc(source.imagePreviewPath);
+        if (url) {
+          setThumbnail(url);
+          return;
+        }
+      }
+      if (source.rasterizedPath) {
+        const url = safeConvertFileSrc(source.rasterizedPath);
+        if (url) {
+          setThumbnail(url);
+          return;
+        }
+      }
+      if (isBrowserNativeImagePath(source.path)) {
+        const url = safeConvertFileSrc(source.path);
+        if (url) {
+          setThumbnail(url);
+          return;
+        }
+      }
+    }
+
     const timer = setTimeout(() => {
-      getClipThumbnail(source.path, clip.inMs)
+      getClipThumbnail(source.path, isImage ? 0 : clip.inMs)
         .then((data) => {
           if (active) setThumbnail(data);
         })
@@ -64,16 +98,11 @@ export const ClipCard: React.FC<ClipCardProps> = ({
       active = false;
       clearTimeout(timer);
     };
-  }, [source?.path, clip.inMs]);
+  }, [source?.path, source?.imagePreviewPath, source?.rasterizedPath, clip.inMs, isImage]);
 
   // Handle double click: seek player to start of clip in global timeline
   const handleDoubleClick = () => {
-    let accumulatedMs = 0;
-    for (let i = 0; i < index; i++) {
-      const c = project.clips[i];
-      accumulatedMs += Math.round((c.outMs - c.inMs) / (c.speed ?? 1.0));
-    }
-    seek(accumulatedMs);
+    seek(getClipStartMs(clip, project.clips));
   };
 
   const handleContextMenu = (e: React.MouseEvent) => {
@@ -138,8 +167,10 @@ export const ClipCard: React.FC<ClipCardProps> = ({
             <img
               src={thumbnail}
               alt=""
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              style={{ width: '100%', height: '100%', objectFit: isImage ? 'contain' : 'cover' }}
             />
+          ) : isImage ? (
+            <ImageIcon size={18} style={{ color: sourceColor }} />
           ) : (
             <FilmIcon size={18} style={{ color: sourceColor }} />
           )}
@@ -147,19 +178,38 @@ export const ClipCard: React.FC<ClipCardProps> = ({
 
         {/* Meta Info */}
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, overflow: 'hidden' }}>
-          <span
-            style={{
-              fontSize: 'var(--text-12)',
-              fontWeight: isSelected ? 600 : 500,
-              color: 'var(--text-primary)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-            title={source?.filename || clip.id}
-          >
-            {source?.filename ? truncateMiddle(source.filename, 16) : clip.id}
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
+            {trackIndex > 0 && (
+              <span
+                className="timecode"
+                style={{
+                  fontSize: 'var(--text-10)',
+                  fontWeight: 700,
+                  padding: '0 4px',
+                  borderRadius: 'var(--r-sm)',
+                  background: 'var(--accent-muted)',
+                  color: 'var(--accent)',
+                  lineHeight: '14px',
+                  flexShrink: 0,
+                }}
+              >
+                V{trackIndex + 1}
+              </span>
+            )}
+            <span
+              style={{
+                fontSize: 'var(--text-12)',
+                fontWeight: isSelected ? 600 : 500,
+                color: 'var(--text-primary)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+              title={source?.filename || clip.id}
+            >
+              {source?.filename ? truncateMiddle(source.filename, 16) : clip.id}
+            </span>
+          </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '1px' }}>
             <span

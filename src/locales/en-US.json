@@ -40,14 +40,15 @@
     "clip_strip": "Clips",
     "timeline": "Timeline",
     "result_summary": "Result",
-    "fast_badge": "⚡ Fast · lossless",
+    "fast_badge": "Fast · lossless",
     "precise_badge": "Precise",
     "reencode_badge": "Re-encode",
     "fast_multi_clip_note": "Micro-clicks possible at cuts, Precise eliminates them",
     "replace_btn": "Replace Current Video",
     "export_btn": "Export",
-    "add_clip": "Add video",
+    "add_clip": "Add media",
     "split": "Split",
+    "select_clip": "Select clip",
     "close_tooltip": "Close project (draft is auto-saved)"
   },
   "clips": {
@@ -63,7 +64,10 @@
     "reveal": "Reveal in Explorer",
     "properties_title": "Clip properties",
     "enable_clip": "Enable clip",
-    "disable_clip": "Disable clip"
+    "disable_clip": "Disable clip",
+    "move_to_overlay": "Move to overlay track above",
+    "move_to_main_track": "Move to main track (V1)",
+    "added_from_explorer": "{count, plural, one {Added # clip to project} other {Added # clips to project}}"
   },
   "player": {
     "play": "Play",
@@ -85,7 +89,16 @@
     "auto_align": "Auto-alignment (Snapping)",
     "auto_align_on": "Auto-alignment: On (snaps to aspect ratios and guides)",
     "auto_align_off": "Auto-alignment: Off (freeform precision)",
-    "empty_canvas_hint": "Black Canvas · Add media from library to start editing"
+    "empty_canvas_hint": "Black Canvas · Add media from library to start editing",
+    "drop_as_overlay": "Drop to place on overlay track above",
+    "preview_quality": "Preview quality",
+    "preview_quality_tooltip": "Preview playback quality (does not affect export)",
+    "quality_original": "Original",
+    "quality_original_desc": "Full source resolution",
+    "quality_1080p_desc": "High · sharp playback",
+    "quality_720p_desc": "Fast · smooth scrubbing",
+    "quality_480p_desc": "Draft · maximum speed",
+    "preview_quality_export_note": "Preview only — export always uses original quality"
   },
   "transform": {
     "title": "Aspect & Framing",
@@ -121,7 +134,29 @@
     "speed_reset": "Reset to 1.0x",
     "speed_custom": "Custom Speed",
     "speed_reencode_hint": "Speed changes require clip re-encoding",
-    "speed_duration_preview": "Effective duration"
+    "speed_duration_preview": "Effective duration",
+    "edit_crop": "Adjust crop",
+    "editing_crop": "Editing crop...",
+    "fit_overlay_canvas": "Fit canvas"
+  },
+  "properties": {
+    "tab_framing": "Framing",
+    "tab_video": "Video",
+    "tab_audio": "Audio"
+  },
+  "video_edit": {
+    "title": "Video Adjustments",
+    "mode_original": "Video: original",
+    "mode_reencode": "Video: re-encode",
+    "no_clip_hint": "Add a video clip to adjust sharpness and image clarity",
+    "sharpness": "Sharpness (CAS)",
+    "sharpness_reset": "Reset sharpness to 0%",
+    "sharpness_off": "Off",
+    "sharpness_subtle": "25%",
+    "sharpness_medium": "50%",
+    "sharpness_strong": "80%",
+    "apply_to_all": "Apply to all clips",
+    "sharpness_hint": "Uses Contrast Adaptive Sharpening (CAS) to enhance soft details without edge halos. Non-zero sharpness re-encodes video on export."
   },
   "audio": {
     "title": "Audio",
@@ -219,7 +254,7 @@
     "replace_behavior": "Replace behavior",
     "always_confirm_replace": "Always ask before replacing original file",
     "context_menu": "Windows context menu",
-    "context_menu_desc": "Quickly open and edit any video from the Windows Explorer right-click menu",
+    "context_menu_desc": "Quickly open a video or add multiple clips from the Windows Explorer right-click menu",
     "context_menu_add_btn": "Add Megu FastCut to context menu",
     "context_menu_remove_btn": "Remove Megu FastCut from context menu",
     "context_menu_status_active": "Currently added to Explorer right-click menu",
@@ -251,10 +286,16 @@
     "no_clips": "No clips on timeline",
     "reorder_clip": "Move to position {pos} of {total}",
     "slip_clip": "Slip: {delta} ({in} – {out})",
-    "full_clip_hint": "Trim edges to slip, or Split (S) to reorder"
+    "full_clip_hint": "Trim edges to slip, or Split (S) to reorder",
+    "drop_new_overlay_hint": "Drop media here to create overlay track {track}",
+    "drop_new_overlay_active": "Release to place on new track {track}",
+    "drop_os_hint": "Drop onto timeline or above main track to overlay",
+    "new_clip_label": "Media"
   },
   "common": {
     "ok": "OK",
+    "apply": "Apply",
+    "applied": "Applied",
     "cancel": "Cancel",
     "save": "Save",
     "close": "Close",
@@ -273,13 +314,22 @@
     "project_media": "Project Media",
     "files_count": "{count, plural, one {# file} other {# files}}",
     "import_btn": "Import",
+    "importing": "Importing media...",
+    "import_failed": "Unsupported or unreadable file: {name}",
     "empty_title": "No media files yet",
-    "empty_hint": "Import or drag video and audio files here to start editing",
-    "add_to_timeline": "Add to Timeline",
+    "empty_hint": "Import or drag any video, photo, or audio files here to start editing",
+    "add_to_timeline": "Add to main track (V1)",
+    "add_as_overlay": "Place on top (overlay track)",
+    "add_as_overlay_hint": "Add on overlay track above main track",
     "remove_from_project": "Remove from Project",
     "on_timeline": "Used on timeline: {count}x",
+    "photo_badge": "IMG",
+    "filter_all": "All",
+    "filter_video": "Video",
+    "filter_photo": "Photo",
+    "filter_audio": "Audio",
     "collapse": "Collapse panel",
     "expand": "Expand panel",
-    "drop_hint": "Drop files to import into project"
+    "drop_hint": "Drop photos or videos to import into project"
   }
 }

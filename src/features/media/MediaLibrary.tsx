@@ -1,10 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useProjectStore } from '../../stores/project';
 import { openVideoFileDialog, getClipThumbnail } from '../../shared/ipc';
 import { SourceFile } from '../../shared/types';
 import { t, formatTimecode, formatFileSize } from '../../shared/i18n';
 import {
+  getFileExtension,
+  getSourceMediaKind,
+  isAudioOnlySource,
+  isBrowserNativeImagePath,
+  isImageSource,
+  safeConvertFileSrc,
+} from '../../shared/media-formats';
+import { setDraggingSourceId } from '../../shared/drag-state';
+import {
   FilmIcon,
+  ImageIcon,
+  LayersIcon,
   PlusIcon,
   FolderOpenIcon,
   TrashIcon,
@@ -14,19 +25,67 @@ import {
 } from '../../components/icons';
 import { Tooltip } from '../../components/Tooltip/Tooltip';
 
+type MediaFilter = 'all' | 'video' | 'image' | 'audio';
+
 interface SourceCardProps {
   source: SourceFile;
   usageCount: number;
-  onAdd: (sourceId: string) => void;
+  hasClipsOnTimeline: boolean;
+  onAddMain: (sourceId: string) => void;
+  onAddOverlay: (sourceId: string) => void;
   onRemove: (sourceId: string) => void;
 }
 
-const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRemove }) => {
+const SourceCard: React.FC<SourceCardProps> = ({
+  source,
+  usageCount,
+  hasClipsOnTimeline,
+  onAddMain,
+  onAddOverlay,
+  onRemove,
+}) => {
+  const isImage = isImageSource(source);
+  const isAudioOnly = isAudioOnlySource(source);
   const [thumb, setThumb] = useState<string | null>(null);
   const [isHovered, setIsHovered] = useState(false);
 
+  // Use direct WebView2 rendering for native images (instant + alpha channel!),
+  // cached PNG preview proxy for exotic images (HEIC, TIFF, PSD, EXR, JXL), or FFmpeg thumb for videos.
   useEffect(() => {
     let active = true;
+
+    if (isImage) {
+      if (source.imagePreviewPath) {
+        const url = safeConvertFileSrc(source.imagePreviewPath);
+        if (url) {
+          setThumb(url);
+          return;
+        }
+      }
+      if (source.rasterizedPath) {
+        const url = safeConvertFileSrc(source.rasterizedPath);
+        if (url) {
+          setThumb(url);
+          return;
+        }
+      }
+      if (isBrowserNativeImagePath(source.path)) {
+        const url = safeConvertFileSrc(source.path);
+        if (url) {
+          setThumb(url);
+          return;
+        }
+      }
+      getClipThumbnail(source.path, 0)
+        .then((data) => {
+          if (active && data) setThumb(data);
+        })
+        .catch(() => {});
+      return () => {
+        active = false;
+      };
+    }
+
     if (source.probe.video) {
       getClipThumbnail(source.path, 0)
         .then((data) => {
@@ -34,32 +93,41 @@ const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRe
         })
         .catch(() => {});
     }
+
     return () => {
       active = false;
     };
-  }, [source.path, source.probe.video]);
+  }, [source.path, source.imagePreviewPath, source.rasterizedPath, source.probe.video, isImage]);
 
   const handleDragStart = (e: React.DragEvent) => {
+    setDraggingSourceId(source.id);
     e.dataTransfer.setData('megu/source-id', source.id);
     e.dataTransfer.setData('text/plain', source.id);
     e.dataTransfer.effectAllowed = 'copy';
   };
 
-  const isAudioOnly = !source.probe.video && source.probe.audio.length > 0;
-  const resolutionLabel = source.probe.video
-    ? source.probe.video.height >= 2160
-      ? '4K'
-      : source.probe.video.height >= 1440
-        ? '1440p'
-        : source.probe.video.height >= 1080
-          ? '1080p'
-          : `${source.probe.video.height}p`
-    : 'AUDIO';
+  const handleDragEnd = () => {
+    setDraggingSourceId(null);
+  };
+
+  const extLabel = getFileExtension(source.path).toUpperCase() || 'IMG';
+  const badgeLabel = isImage
+    ? extLabel
+    : source.probe.video
+      ? source.probe.video.height >= 2160
+        ? '4K'
+        : source.probe.video.height >= 1440
+          ? '1440p'
+          : source.probe.video.height >= 1080
+            ? '1080p'
+            : `${source.probe.video.height}p`
+      : 'AUDIO';
 
   return (
     <div
       draggable
       onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -70,7 +138,7 @@ const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRe
         borderRadius: 'var(--r-md)',
         overflow: 'hidden',
         cursor: 'grab',
-        transition: 'all 0.15s ease',
+        transition: 'border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out)',
         boxShadow: isHovered ? 'var(--shadow-2)' : 'none',
         position: 'relative',
         userSelect: 'none',
@@ -82,7 +150,9 @@ const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRe
           position: 'relative',
           width: '100%',
           aspectRatio: '16/9',
-          background: 'var(--bg-base)',
+          background: isImage
+            ? 'repeating-conic-gradient(var(--bg-inset) 0% 25%, var(--bg-surface) 0% 50%) 50% / 12px 12px'
+            : 'var(--bg-base)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -93,10 +163,11 @@ const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRe
           <img
             src={thumb}
             alt={source.filename}
+            draggable={false}
             style={{
               width: '100%',
               height: '100%',
-              objectFit: 'cover',
+              objectFit: isImage ? 'contain' : 'cover',
             }}
           />
         ) : (
@@ -109,26 +180,33 @@ const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRe
               gap: '4px',
             }}
           >
-            {isAudioOnly ? <VolumeIcon size={24} /> : <FilmIcon size={24} />}
+            {isAudioOnly ? (
+              <VolumeIcon size={24} />
+            ) : isImage ? (
+              <ImageIcon size={24} />
+            ) : (
+              <FilmIcon size={24} />
+            )}
           </div>
         )}
 
-        {/* Resolution Badge (top-left) */}
+        {/* Format / Resolution Badge (top-left) */}
         <span
           style={{
             position: 'absolute',
             top: '4px',
             left: '4px',
-            background: 'rgba(0, 0, 0, 0.75)',
+            background: isImage ? 'rgba(16, 185, 129, 0.85)' : 'rgba(0, 0, 0, 0.75)',
             backdropFilter: 'blur(4px)',
-            color: 'var(--text-primary)',
+            color: '#ffffff',
             fontSize: 'var(--text-10)',
-            fontWeight: 600,
+            fontWeight: 700,
             padding: '1px 5px',
             borderRadius: 'var(--r-xs)',
+            letterSpacing: '0.02em',
           }}
         >
-          {resolutionLabel}
+          {badgeLabel}
         </span>
 
         {/* Timeline usage count badge (top-right, if on timeline) */}
@@ -139,7 +217,7 @@ const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRe
               top: '4px',
               right: '4px',
               background: 'var(--accent)',
-              color: '#ffffff',
+              color: 'var(--accent-contrast)',
               fontSize: 'var(--text-10)',
               fontWeight: 700,
               padding: '1px 5px',
@@ -152,7 +230,7 @@ const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRe
           </span>
         )}
 
-        {/* Duration badge (bottom-right) */}
+        {/* Duration / Photo badge (bottom-right) */}
         <span
           style={{
             position: 'absolute',
@@ -167,33 +245,35 @@ const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRe
             borderRadius: 'var(--r-xs)',
           }}
         >
-          {formatTimecode(source.probe.durationMs).replace(/^00:/, '')}
+          {isImage
+            ? t('media_library.photo_badge')
+            : formatTimecode(source.probe.durationMs).replace(/^00:/, '')}
         </span>
 
-        {/* Hover Action Overlay */}
+        {/* Hover Action Overlay: Add to V1, Add as Overlay (V2+), Remove */}
         {isHovered && (
           <div
             style={{
               position: 'absolute',
               inset: 0,
-              background: 'rgba(0, 0, 0, 0.55)',
+              background: 'rgba(0, 0, 0, 0.6)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 'var(--space-2)',
-              animation: 'fadeIn 0.1s ease',
+              gap: '6px',
             }}
           >
             <Tooltip content={t('media_library.add_to_timeline')}>
               <button
                 type="button"
+                aria-label={t('media_library.add_to_timeline')}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onAdd(source.id);
+                  onAddMain(source.id);
                 }}
                 style={{
-                  width: '32px',
-                  height: '32px',
+                  width: '28px',
+                  height: '28px',
                   borderRadius: 'var(--r-full)',
                   background: 'var(--accent)',
                   color: '#ffffff',
@@ -203,25 +283,64 @@ const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRe
                   justifyContent: 'center',
                   cursor: 'pointer',
                   boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
-                  transition: 'transform 0.15s ease',
+                  transition: 'transform var(--dur-fast) var(--ease-out)',
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.1)')}
                 onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
               >
-                <PlusIcon size={18} />
+                <PlusIcon size={16} />
               </button>
             </Tooltip>
+
+            {!isAudioOnly && (
+              <Tooltip
+                content={
+                  hasClipsOnTimeline
+                    ? t('media_library.add_as_overlay')
+                    : t('media_library.add_as_overlay_hint')
+                }
+              >
+                <button
+                  type="button"
+                  aria-label={t('media_library.add_as_overlay')}
+                  data-testid={`add-overlay-${source.id}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAddOverlay(source.id);
+                  }}
+                  style={{
+                    width: '28px',
+                    height: '28px',
+                    borderRadius: 'var(--r-full)',
+                    background: 'var(--bg-elevated)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--accent)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+                    transition: 'transform var(--dur-fast) var(--ease-out)',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.1)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+                >
+                  <LayersIcon size={14} />
+                </button>
+              </Tooltip>
+            )}
 
             <Tooltip content={t('media_library.remove_from_project')}>
               <button
                 type="button"
+                aria-label={t('media_library.remove_from_project')}
                 onClick={(e) => {
                   e.stopPropagation();
                   onRemove(source.id);
                 }}
                 style={{
-                  width: '28px',
-                  height: '28px',
+                  width: '26px',
+                  height: '26px',
                   borderRadius: 'var(--r-full)',
                   background: 'rgba(239, 68, 68, 0.85)',
                   color: '#ffffff',
@@ -231,12 +350,12 @@ const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRe
                   justifyContent: 'center',
                   cursor: 'pointer',
                   boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
-                  transition: 'transform 0.15s ease',
+                  transition: 'transform var(--dur-fast) var(--ease-out)',
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.1)')}
                 onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
               >
-                <TrashIcon size={14} />
+                <TrashIcon size={13} />
               </button>
             </Tooltip>
           </div>
@@ -270,14 +389,23 @@ const SourceCard: React.FC<SourceCardProps> = ({ source, usageCount, onAdd, onRe
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            gap: '4px',
             fontSize: 'var(--text-10)',
-            color: 'var(--text-muted)',
+            color: 'var(--text-secondary)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
           }}
         >
-          <span>{formatFileSize(source.probe.sizeBytes)}</span>
-          {source.probe.video && source.probe.video.fpsDen > 0 && (
-            <span>{Math.round(source.probe.video.fpsNum / source.probe.video.fpsDen)} fps</span>
-          )}
+          <span style={{ flexShrink: 0 }}>{formatFileSize(source.probe.sizeBytes)}</span>
+          {isImage && source.probe.video ? (
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {source.probe.video.width}×{source.probe.video.height}
+            </span>
+          ) : source.probe.video && source.probe.video.fpsDen > 0 ? (
+            <span style={{ flexShrink: 0 }}>
+              {Math.round(source.probe.video.fpsNum / source.probe.video.fpsDen)} fps
+            </span>
+          ) : null}
         </div>
       </div>
     </div>
@@ -288,6 +416,7 @@ export const MediaLibrary: React.FC = () => {
   const { sources, project, importSources, addClipFromSource, removeSource } = useProjectStore();
   const [isDragOver, setIsDragOver] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [filter, setFilter] = useState<MediaFilter>('all');
 
   const handleOpenDialog = async () => {
     const paths = await openVideoFileDialog();
@@ -316,7 +445,7 @@ export const MediaLibrary: React.FC = () => {
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
       const paths = files
-        .map((f) => (f as unknown as { path?: string }).path || f.name)
+        .map((f) => (f as unknown as { path?: string }).path || '')
         .filter(Boolean);
       if (paths.length > 0) {
         await importSources(paths);
@@ -324,11 +453,35 @@ export const MediaLibrary: React.FC = () => {
     }
   };
 
-  // Count usages per sourceId
-  const usageCounts = project.clips.reduce<Record<string, number>>((acc, clip) => {
-    acc[clip.sourceId] = (acc[clip.sourceId] || 0) + 1;
-    return acc;
-  }, {});
+  const usageCounts = useMemo(
+    () =>
+      project.clips.reduce<Record<string, number>>((acc, clip) => {
+        acc[clip.sourceId] = (acc[clip.sourceId] || 0) + 1;
+        return acc;
+      }, {}),
+    [project.clips]
+  );
+
+  const kindCounts = useMemo(() => {
+    let video = 0;
+    let image = 0;
+    let audio = 0;
+    for (const s of sources) {
+      const k = getSourceMediaKind(s);
+      if (k === 'image') image += 1;
+      else if (k === 'audio') audio += 1;
+      else video += 1;
+    }
+    return { video, image, audio };
+  }, [sources]);
+
+  const filteredSources = useMemo(() => {
+    if (filter === 'all') return sources;
+    return sources.filter((s) => getSourceMediaKind(s) === filter);
+  }, [sources, filter]);
+
+  const hasMultipleKinds =
+    Number(kindCounts.video > 0) + Number(kindCounts.image > 0) + Number(kindCounts.audio > 0) > 1;
 
   if (isCollapsed) {
     return (
@@ -383,6 +536,7 @@ export const MediaLibrary: React.FC = () => {
   return (
     <aside
       aria-label="Media Library"
+      data-drop-zone="media-library"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -431,7 +585,6 @@ export const MediaLibrary: React.FC = () => {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          {/* Import Button */}
           <button
             type="button"
             onClick={handleOpenDialog}
@@ -440,7 +593,8 @@ export const MediaLibrary: React.FC = () => {
               display: 'inline-flex',
               alignItems: 'center',
               gap: '4px',
-              padding: '4px 8px',
+              minHeight: '26px',
+              padding: '4px 9px',
               background: 'var(--accent-muted)',
               border: '1px solid var(--accent)',
               borderRadius: 'var(--r-md)',
@@ -448,11 +602,11 @@ export const MediaLibrary: React.FC = () => {
               fontSize: 'var(--text-11)',
               fontWeight: 600,
               cursor: 'pointer',
-              transition: 'all 0.15s ease',
+              transition: 'all var(--dur-fast) var(--ease-out)',
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.background = 'var(--accent)';
-              e.currentTarget.style.color = '#ffffff';
+              e.currentTarget.style.color = 'var(--accent-contrast)';
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = 'var(--accent-muted)';
@@ -463,17 +617,18 @@ export const MediaLibrary: React.FC = () => {
             <span>{t('media_library.import_btn')}</span>
           </button>
 
-          {/* Collapse Button */}
           <Tooltip content={t('media_library.collapse')}>
             <button
               type="button"
+              aria-label={t('media_library.collapse')}
               onClick={() => setIsCollapsed(true)}
               style={{
                 background: 'transparent',
                 border: 'none',
                 color: 'var(--text-muted)',
                 cursor: 'pointer',
-                padding: '4px',
+                width: '26px',
+                height: '26px',
                 borderRadius: 'var(--r-sm)',
                 display: 'flex',
                 alignItems: 'center',
@@ -486,7 +641,60 @@ export const MediaLibrary: React.FC = () => {
         </div>
       </div>
 
-      {/* Sources Grid or Empty State Area */}
+      {/* Media Kind Filter Pills (shown when library contains mixed media types) */}
+      {hasMultipleKinds && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            padding: '6px var(--space-3)',
+            borderBottom: '1px solid var(--border-subtle)',
+            flexShrink: 0,
+            flexWrap: 'wrap',
+          }}
+        >
+          {(
+            [
+              { id: 'all' as const, label: t('media_library.filter_all'), count: sources.length },
+              ...(kindCounts.video > 0
+                ? [{ id: 'video' as const, label: t('media_library.filter_video'), count: kindCounts.video }]
+                : []),
+              ...(kindCounts.image > 0
+                ? [{ id: 'image' as const, label: t('media_library.filter_photo'), count: kindCounts.image }]
+                : []),
+              ...(kindCounts.audio > 0
+                ? [{ id: 'audio' as const, label: t('media_library.filter_audio'), count: kindCounts.audio }]
+                : []),
+            ]
+          ).map((item) => {
+            const active = filter === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setFilter(item.id)}
+                style={{
+                  minHeight: '24px',
+                  padding: '3px 8px',
+                  borderRadius: 'var(--r-full)',
+                  border: `1px solid ${active ? 'var(--accent)' : 'var(--border-subtle)'}`,
+                  background: active ? 'var(--accent-muted)' : 'transparent',
+                  color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                  fontSize: 'var(--text-10)',
+                  fontWeight: active ? 600 : 500,
+                  cursor: 'pointer',
+                  transition: 'all var(--dur-fast) var(--ease-out)',
+                }}
+              >
+                {item.label} ({item.count})
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Sources Grid or Empty State */}
       <div
         style={{
           flex: 1,
@@ -496,7 +704,7 @@ export const MediaLibrary: React.FC = () => {
           flexDirection: 'column',
           gap: 'var(--space-3)',
           background: isDragOver ? 'var(--accent-muted)' : 'transparent',
-          transition: 'background 0.15s ease',
+          transition: 'background var(--dur-fast) var(--ease-out)',
         }}
       >
         {sources.length === 0 ? (
@@ -515,7 +723,7 @@ export const MediaLibrary: React.FC = () => {
               cursor: 'pointer',
               background: 'var(--bg-elevated)',
               gap: 'var(--space-2)',
-              transition: 'border-color 0.15s ease',
+              transition: 'border-color var(--dur-fast) var(--ease-out)',
             }}
             onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent)')}
             onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-strong)')}
@@ -551,7 +759,7 @@ export const MediaLibrary: React.FC = () => {
                 fontSize: 'var(--text-10)',
                 color: 'var(--text-muted)',
                 lineHeight: 1.4,
-                maxWidth: '180px',
+                maxWidth: '190px',
               }}
             >
               {t('media_library.empty_hint')}
@@ -586,12 +794,14 @@ export const MediaLibrary: React.FC = () => {
               gap: 'var(--space-2)',
             }}
           >
-            {sources.map((source) => (
+            {filteredSources.map((source) => (
               <SourceCard
                 key={source.id}
                 source={source}
                 usageCount={usageCounts[source.id] || 0}
-                onAdd={addClipFromSource}
+                hasClipsOnTimeline={project.clips.length > 0}
+                onAddMain={(id) => addClipFromSource(id)}
+                onAddOverlay={(id) => addClipFromSource(id, { asOverlay: true })}
                 onRemove={removeSource}
               />
             ))}

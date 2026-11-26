@@ -3,6 +3,7 @@ import { Clip, SourceFile } from '../../shared/types';
 import { useProjectStore } from '../../stores/project';
 import { revealInExplorer } from '../../shared/ipc';
 import { t } from '../../shared/i18n';
+import { getClipTrackIndex } from '../../shared/media-formats';
 import {
   ScissorsIcon,
   PlusIcon,
@@ -10,6 +11,7 @@ import {
   FolderIcon,
   EyeIcon,
   EyeOffIcon,
+  LayersIcon,
 } from '../../components/icons';
 
 export interface ContextMenuPosition {
@@ -30,7 +32,8 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
   position,
   onClose,
 }) => {
-  const { duplicateClip, removeClip, toggleClipEnabled } = useProjectStore();
+  const { duplicateClip, removeClip, toggleClipEnabled, moveClipToTrack } = useProjectStore();
+  const trackIndex = getClipTrackIndex(clip);
 
   useEffect(() => {
     const handleGlobalClick = () => onClose();
@@ -82,6 +85,21 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
       >
         <PlusIcon size={14} />
         <span>{t('clips.duplicate')}</span>
+      </button>
+
+      {/* Move between Main Track (V1) and Overlay Track (V2+) */}
+      <button
+        type="button"
+        className="menu-item"
+        onClick={() => {
+          moveClipToTrack(clip.id, trackIndex === 0 ? 'overlay' : 'main');
+          onClose();
+        }}
+      >
+        <LayersIcon size={14} />
+        <span>
+          {trackIndex === 0 ? t('clips.move_to_overlay') : t('clips.move_to_main_track')}
+        </span>
       </button>
 
       {/* Split */}

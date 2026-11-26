@@ -1,7 +1,9 @@
 use crate::ffmpeg::encoder_detect::{detect_capabilities, Capabilities};
 use crate::media::keyframes::extract_keyframes;
 use crate::media::probe::{probe_media_file, ProbeResult};
-use crate::media::proxy::{generate_proxy_file, needs_proxy};
+use crate::media::proxy::{
+    generate_image_preview_proxy, generate_proxy_file, needs_proxy, save_rasterized_svg_png,
+};
 use crate::media::replace::{
     check_replace_eligibility as check_replace_elig,
     finalize_replace as final_replace,
@@ -36,8 +38,36 @@ pub async fn check_needs_proxy(codec: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub async fn generate_proxy(path: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || generate_proxy_file(&path))
+pub async fn generate_proxy(
+    path: String,
+    quality: Option<String>,
+    source_width: Option<u32>,
+    source_height: Option<u32>,
+    force: Option<bool>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        generate_proxy_file(
+            &path,
+            quality.as_deref(),
+            source_width,
+            source_height,
+            force.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn generate_image_proxy(path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || generate_image_preview_proxy(&path))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn save_rasterized_svg(source_path: String, png_base64: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || save_rasterized_svg_png(&source_path, &png_base64))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -141,12 +171,10 @@ pub fn exit_app(app_handle: tauri::AppHandle) {
 }
 
 #[tauri::command]
-pub fn get_initial_file(state: tauri::State<'_, crate::LaunchState>) -> Option<String> {
-    if let Ok(mut lock) = state.0.lock() {
-        lock.take()
-    } else {
-        None
-    }
+pub fn get_initial_launch(
+    state: tauri::State<'_, crate::LaunchState>,
+) -> Option<crate::ExternalOpenPayload> {
+    state.take_initial_and_mark_ready()
 }
 
 #[tauri::command]
