@@ -7,6 +7,9 @@ export interface ToastItem {
   durationMs?: number;
 }
 
+export type LeftSidebarTab = 'media' | 'transitions';
+export type TransitionPlacement = 'junction' | 'intro' | 'outro';
+
 interface UiState {
   screen: 'welcome' | 'editor';
   isExportOpen: boolean;
@@ -16,6 +19,9 @@ interface UiState {
   isShortcutsOpen: boolean;
   isFullscreenPreview: boolean;
   isMaximized: boolean;
+  leftSidebarTab: LeftSidebarTab;
+  isLeftSidebarCollapsed: boolean;
+  transitionPlacement: TransitionPlacement;
   toasts: ToastItem[];
 
   setScreen: (screen: 'welcome' | 'editor') => void;
@@ -26,6 +32,10 @@ interface UiState {
   setShortcutsOpen: (open: boolean) => void;
   setFullscreenPreview: (fullscreen: boolean) => void;
   setIsMaximized: (maximized: boolean) => void;
+  setLeftSidebarTab: (tab: LeftSidebarTab) => void;
+  setLeftSidebarCollapsed: (collapsed: boolean) => void;
+  setTransitionPlacement: (placement: TransitionPlacement) => void;
+  focusTransitionSlot: (placement: TransitionPlacement) => void;
   addToast: (toast: Omit<ToastItem, 'id'>) => string;
   removeToast: (id: string) => void;
 }
@@ -39,6 +49,9 @@ export const useUiStore = create<UiState>((set) => ({
   isShortcutsOpen: false,
   isFullscreenPreview: false,
   isMaximized: false,
+  leftSidebarTab: 'media',
+  isLeftSidebarCollapsed: false,
+  transitionPlacement: 'junction',
   toasts: [],
 
   setScreen: (screen) => set({ screen }),
@@ -49,6 +62,15 @@ export const useUiStore = create<UiState>((set) => ({
   setShortcutsOpen: (isShortcutsOpen) => set({ isShortcutsOpen }),
   setFullscreenPreview: (isFullscreenPreview) => set({ isFullscreenPreview }),
   setIsMaximized: (isMaximized) => set({ isMaximized }),
+  setLeftSidebarTab: (leftSidebarTab) => set({ leftSidebarTab }),
+  setLeftSidebarCollapsed: (isLeftSidebarCollapsed) => set({ isLeftSidebarCollapsed }),
+  setTransitionPlacement: (transitionPlacement) => set({ transitionPlacement }),
+  focusTransitionSlot: (transitionPlacement) =>
+    set({
+      leftSidebarTab: 'transitions',
+      isLeftSidebarCollapsed: false,
+      transitionPlacement,
+    }),
 
   addToast: (toast) => {
     const id = Math.random().toString(36).substring(2, 9);

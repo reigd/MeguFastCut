@@ -3,7 +3,8 @@ import { useProjectStore } from '../../stores/project';
 import { usePlayerStore } from '../../stores/player';
 import { useTimelineStore } from '../../stores/timeline';
 import { useHistoryStore } from '../../stores/history';
-import { Clip } from '../../shared/types';
+import { useUiStore } from '../../stores/ui';
+import { Clip, TransitionType } from '../../shared/types';
 import {
   TimelineClipSegment,
   SnapCandidate,
@@ -28,7 +29,16 @@ import {
   hasTrackOverlap,
   isImageSource,
 } from '../../shared/media-formats';
-import { getDraggingSourceId, setDraggingSourceId } from '../../shared/drag-state';
+import {
+  getDraggingSourceId,
+  getDraggingTransitionType,
+  setDraggingSourceId,
+  setDraggingTransitionType,
+} from '../../shared/drag-state';
+import {
+  computeMainTrackTiming,
+  createDefaultTransition,
+} from '../../shared/transitions';
 
 interface DragState {
   type: 'scrub' | 'trim-in' | 'trim-out' | 'clip-pending' | 'clip-move' | 'clip-slip';
@@ -104,6 +114,8 @@ export const TimelineCanvas: React.FC = () => {
     addClipFromSource,
     addFiles,
     addFilesAsOverlay,
+    setClipTransitionIn,
+    setClipTransitionOut,
   } = useProjectStore();
   const {
     pixelsPerMs,
@@ -129,12 +141,21 @@ export const TimelineCanvas: React.FC = () => {
     prevMaxTrackRef.current = maxTrackIndex;
   }, [maxTrackIndex, timelineHeight, setTimelineHeight]);
 
-  // Compute all multi-track clip segments
-  const { segments, totalDurationMs, snapCandidates } = useMemo(() => {
-    let mainAccMs = 0;
-    let maxEndMs = 0;
+  // Compute all multi-track clip segments + V1 transition timing
+  const { segments, totalDurationMs, snapCandidates, transitionMarkers } = useMemo(() => {
+    const mainTiming = computeMainTrackTiming(project.clips);
+    const mainTimingMap = new Map(mainTiming.items.map((it) => [it.clip.id, it]));
+    let maxEndMs = mainTiming.totalMainDurationMs;
     const segs: TimelineClipSegment[] = [];
     const candidates: SnapCandidate[] = [{ timeMs: 0, type: 'zero' }];
+    const markers: {
+      clipId: string;
+      placement: 'junction' | 'intro' | 'outro';
+      centerMs: number;
+      startMs: number;
+      endMs: number;
+      durationMs: number;
+    }[] = [];
 
     const videoPalette = ['#38BDF8', '#818CF8', '#60A5FA', '#F472B6', '#FBBF24', '#A78BFA'];
     const imageColor = '#34D399';
@@ -150,9 +171,13 @@ export const TimelineCanvas: React.FC = () => {
       const clipSpeed = clip.speed && clip.speed > 0 ? clip.speed : 1.0;
       const clipDuration = getClipDurationMs(clip);
       const trackIndex = getClipTrackIndex(clip);
-      const timelineStartMs =
-        clip.startMs !== undefined ? Math.max(0, clip.startMs) : trackIndex === 0 ? mainAccMs : 0;
-      const timelineEndMs = timelineStartMs + clipDuration;
+      const mainInfo = trackIndex === 0 ? mainTimingMap.get(clip.id) : undefined;
+      const timelineStartMs = mainInfo
+        ? mainInfo.visualStartMs
+        : clip.startMs !== undefined
+          ? Math.max(0, clip.startMs)
+          : 0;
+      const timelineEndMs = mainInfo ? mainInfo.visualEndMs : timelineStartMs + clipDuration;
 
       const seg: TimelineClipSegment = {
         clipId: clip.id,
@@ -184,10 +209,39 @@ export const TimelineCanvas: React.FC = () => {
         }
       });
 
-      if (clip.enabled) {
-        if (trackIndex === 0) {
-          mainAccMs = Math.max(mainAccMs, timelineEndMs);
+      if (mainInfo) {
+        if (mainInfo.overlapInMs > 0) {
+          markers.push({
+            clipId: clip.id,
+            placement: 'junction',
+            centerMs: mainInfo.visualStartMs,
+            startMs: mainInfo.playStartMs,
+            endMs: mainInfo.playStartMs + mainInfo.overlapInMs,
+            durationMs: mainInfo.overlapInMs,
+          });
+        } else if (mainInfo.introDurationMs > 0) {
+          markers.push({
+            clipId: clip.id,
+            placement: 'intro',
+            centerMs: mainInfo.playStartMs + Math.round(mainInfo.introDurationMs / 2),
+            startMs: mainInfo.playStartMs,
+            endMs: mainInfo.playStartMs + mainInfo.introDurationMs,
+            durationMs: mainInfo.introDurationMs,
+          });
         }
+        if (mainInfo.outroDurationMs > 0) {
+          markers.push({
+            clipId: clip.id,
+            placement: 'outro',
+            centerMs: mainInfo.playEndMs - Math.round(mainInfo.outroDurationMs / 2),
+            startMs: mainInfo.playEndMs - mainInfo.outroDurationMs,
+            endMs: mainInfo.playEndMs,
+            durationMs: mainInfo.outroDurationMs,
+          });
+        }
+      }
+
+      if (clip.enabled && trackIndex > 0) {
         maxEndMs = Math.max(maxEndMs, timelineEndMs);
       }
     });
@@ -198,6 +252,7 @@ export const TimelineCanvas: React.FC = () => {
       segments: segs,
       totalDurationMs: maxEndMs,
       snapCandidates: candidates,
+      transitionMarkers: markers,
     };
   }, [project.clips, sources]);
 
@@ -506,6 +561,65 @@ export const TimelineCanvas: React.FC = () => {
       ctx.restore();
     });
 
+    // 4b. Render V1 Transition Zones & Clickable Bowtie Badges
+    const mainLane = laneMap.get(0);
+    if (mainLane && transitionMarkers.length > 0) {
+      for (const m of transitionMarkers) {
+        const zStartX = gutterW + timeToPixel(m.startMs, scrollOffsetMs, pixelsPerMs);
+        const zEndX = gutterW + timeToPixel(m.endMs, scrollOffsetMs, pixelsPerMs);
+        const centerX = gutterW + timeToPixel(m.centerMs, scrollOffsetMs, pixelsPerMs);
+        if (zEndX < gutterW || zStartX > width) continue;
+
+        ctx.save();
+        // Shaded transition span on V1
+        const zoneW = Math.max(4, zEndX - zStartX);
+        ctx.fillStyle = 'rgba(235, 94, 40, 0.22)';
+        ctx.fillRect(zStartX, mainLane.y + 3, zoneW, mainLane.height - 6);
+
+        // Diagonal fade wedge for intro/outro
+        if (m.placement === 'intro' || m.placement === 'outro') {
+          ctx.strokeStyle = accentColor;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          if (m.placement === 'intro') {
+            ctx.moveTo(zStartX, mainLane.y + mainLane.height - 4);
+            ctx.lineTo(zEndX, mainLane.y + 4);
+          } else {
+            ctx.moveTo(zStartX, mainLane.y + 4);
+            ctx.lineTo(zEndX, mainLane.y + mainLane.height - 4);
+          }
+          ctx.stroke();
+        }
+
+        // Bowtie badge centered at junction / intro / outro
+        const badgeSize = 18;
+        const bx = Math.round(centerX - badgeSize / 2);
+        const by = Math.round(mainLane.y + (mainLane.height - badgeSize) / 2);
+        ctx.fillStyle = bgElevated;
+        ctx.strokeStyle = accentColor;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(bx, by, badgeSize, badgeSize, 4);
+        ctx.fill();
+        ctx.stroke();
+
+        // Stroke bowtie inside badge
+        ctx.strokeStyle = accentColor;
+        ctx.lineWidth = 1.25;
+        ctx.beginPath();
+        ctx.moveTo(bx + 4, by + 5);
+        ctx.lineTo(bx + 9, by + 9);
+        ctx.lineTo(bx + 4, by + 13);
+        ctx.closePath();
+        ctx.moveTo(bx + 14, by + 5);
+        ctx.lineTo(bx + 9, by + 9);
+        ctx.lineTo(bx + 14, by + 13);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
     // 5. Render Drop Ghost when dragging a photo/video from MediaLibrary onto timeline
     if (dropGhost) {
       const ghostX = gutterW + timeToPixel(dropGhost.startMs, scrollOffsetMs, pixelsPerMs);
@@ -746,6 +860,7 @@ export const TimelineCanvas: React.FC = () => {
     ctx.restore();
   }, [
     segments,
+    transitionMarkers,
     activeClipId,
     pixelsPerMs,
     scrollOffsetMs,
@@ -839,6 +954,21 @@ export const TimelineCanvas: React.FC = () => {
       return;
     }
 
+    // 2.5 Click directly on a V1 Transition Badge -> focus Transitions tab on that slot
+    const mainLane = layout.lanes.find((l) => l.trackIndex === 0);
+    if (mainLane && mouseY >= mainLane.y && mouseY <= mainLane.y + mainLane.height) {
+      for (const m of transitionMarkers) {
+        const badgeX = TRACK_GUTTER_WIDTH + timeToPixel(m.centerMs, scrollOffsetMs, pixelsPerMs);
+        if (Math.abs(mouseX - badgeX) <= 11) {
+          setActiveClipId(m.clipId);
+          useUiStore.getState().focusTransitionSlot(m.placement);
+          usePlayerStore.getState().seek(Math.max(0, m.startMs - 200));
+          draw();
+          return;
+        }
+      }
+    }
+
     // 3. Check active clip trim handles (< and >) on its specific track lane
     const activeSeg = segments.find((s) => s.clipId === activeClipId);
     if (activeSeg) {
@@ -890,6 +1020,7 @@ export const TimelineCanvas: React.FC = () => {
     const hit = hitTestSegment(mouseX, mouseY);
     if (hit) {
       const clickedSeg = hit.segment;
+      setActiveClipId(clickedSeg.clipId);
       const clipStartX =
         TRACK_GUTTER_WIDTH + timeToPixel(clickedSeg.timelineStartMs, scrollOffsetMs, pixelsPerMs);
       const clipEndX =
@@ -1418,6 +1549,10 @@ export const TimelineCanvas: React.FC = () => {
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'copy';
+    if (getDraggingTransitionType()) {
+      dropGhostRef.current = null;
+      return;
+    }
     const target = resolveDropTarget(e.clientX, e.clientY);
     dropGhostRef.current = target;
     draw();
@@ -1433,6 +1568,62 @@ export const TimelineCanvas: React.FC = () => {
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+
+    const transitionTypeRaw =
+      e.dataTransfer.getData('megu/transition-type') || getDraggingTransitionType();
+    setDraggingTransitionType(null);
+    if (transitionTypeRaw && transitionTypeRaw !== 'none') {
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        const hit = hitTestSegment(mouseX, mouseY);
+        const targetSeg = hit?.segment || segments.find((s) => s.trackIndex === 0);
+        if (targetSeg) {
+          const mainSegs = segments.filter((s) => s.trackIndex === 0 && s.enabled);
+          const mainIdx = mainSegs.findIndex((s) => s.clipId === targetSeg.clipId);
+          const isCloserToEnd =
+            mouseX >
+            TRACK_GUTTER_WIDTH +
+              timeToPixel(
+                (targetSeg.timelineStartMs + targetSeg.timelineEndMs) / 2,
+                scrollOffsetMs,
+                pixelsPerMs
+              );
+          const tr = createDefaultTransition(transitionTypeRaw as TransitionType);
+          if (targetSeg.trackIndex === 0 && mainSegs.length > 1) {
+            if (isCloserToEnd && mainIdx >= 0 && mainIdx < mainSegs.length - 1) {
+              const nextSeg = mainSegs[mainIdx + 1];
+              setClipTransitionIn(nextSeg.clipId, tr, true);
+              setActiveClipId(nextSeg.clipId);
+              useUiStore.getState().focusTransitionSlot('junction');
+            } else if (mainIdx > 0) {
+              setClipTransitionIn(targetSeg.clipId, tr, true);
+              setActiveClipId(targetSeg.clipId);
+              useUiStore.getState().focusTransitionSlot('junction');
+            } else {
+              setClipTransitionIn(targetSeg.clipId, tr, true);
+              setActiveClipId(targetSeg.clipId);
+              useUiStore.getState().focusTransitionSlot('intro');
+            }
+          } else {
+            if (isCloserToEnd) {
+              setClipTransitionOut(targetSeg.clipId, tr, true);
+              useUiStore.getState().focusTransitionSlot('outro');
+            } else {
+              setClipTransitionIn(targetSeg.clipId, tr, true);
+              useUiStore.getState().focusTransitionSlot('intro');
+            }
+            setActiveClipId(targetSeg.clipId);
+          }
+        }
+      }
+      dropGhostRef.current = null;
+      draw();
+      return;
+    }
+
     const target = resolveDropTarget(e.clientX, e.clientY);
     dropGhostRef.current = null;
     draw();

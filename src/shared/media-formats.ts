@@ -1,5 +1,6 @@
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { Clip, MediaKind, SourceFile } from './types';
+import { computeMainTrackTiming } from './transitions';
 
 export const DEFAULT_IMAGE_DURATION_MS = 5000;
 export const MAX_IMAGE_CLIP_DURATION_MS = 3_600_000; // 1 hour max for stretched photo clips
@@ -102,24 +103,16 @@ export function getClipStartMs(clip: Clip, clips?: Clip[]): number {
 }
 
 export function getTimelineTotalDurationMs(clips: Clip[]): number {
-  let mainAcc = 0;
-  let maxEnd = 0;
+  const { totalMainDurationMs } = computeMainTrackTiming(clips);
+  let maxEnd = totalMainDurationMs;
 
   for (const clip of clips) {
     if (!clip.enabled) continue;
     const track = getClipTrackIndex(clip);
+    if (track === 0) continue;
     const dur = getClipDurationMs(clip);
-    const start =
-      clip.startMs !== undefined
-        ? Math.max(0, clip.startMs)
-        : track === 0
-          ? mainAcc
-          : 0;
-    const end = start + dur;
-    if (track === 0) {
-      mainAcc = Math.max(mainAcc, end);
-    }
-    maxEnd = Math.max(maxEnd, end);
+    const start = clip.startMs !== undefined ? Math.max(0, clip.startMs) : 0;
+    maxEnd = Math.max(maxEnd, start + dur);
   }
 
   return maxEnd;

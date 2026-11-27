@@ -9,6 +9,11 @@ import {
   getTimelineTotalDurationMs,
   isImageSource,
 } from '../shared/media-formats';
+import { isActiveTransition } from '../shared/transitions';
+import {
+  hasActiveVideoAdjustments,
+  resolveClipVideoAdjustments,
+} from '../shared/video-fx';
 
 export interface ExportState {
   isExportModalOpen: boolean;
@@ -258,6 +263,8 @@ export const useExportStore = create<ExportState>((set) => {
         durationMs: s.probe.durationMs,
         width: s.probe.video?.width,
         height: s.probe.video?.height,
+        fpsNum: s.probe.video?.fpsNum,
+        fpsDen: s.probe.video?.fpsDen,
         codec: s.probe.video?.codec,
         audioCodec: s.probe.audio?.[0]?.codec,
         isImage: isImageSource(s),
@@ -267,6 +274,15 @@ export const useExportStore = create<ExportState>((set) => {
         const inMs = Math.max(0, Math.round(c.inMs));
         const outMs = Math.max(inMs + 1, Math.round(c.outMs));
         const trackIndex = getClipTrackIndex(c);
+        const resolvedAdj = resolveClipVideoAdjustments(c);
+        const clipBounds =
+          trackIndex === 0
+            ? project.fitMode === 'fit'
+              ? (c.fitBounds ?? project.fitBounds)
+              : project.fitMode === 'stretch'
+                ? (c.stretchBounds ?? project.stretchBounds)
+                : null
+            : null;
         return {
           id: c.id,
           sourceId: c.sourceId,
@@ -278,7 +294,8 @@ export const useExportStore = create<ExportState>((set) => {
           flipV: c.flipV,
           volumeDb: c.volumeDb || 0,
           speed: c.speed || 1.0,
-          sharpness: c.sharpness || 0,
+          sharpness: resolvedAdj.sharpness / 100,
+          videoAdjustments: hasActiveVideoAdjustments(resolvedAdj) ? resolvedAdj : undefined,
           startMs: c.startMs !== undefined ? Math.max(0, Math.round(c.startMs)) : undefined,
           trackIndex,
           overlayBounds:
@@ -290,15 +307,27 @@ export const useExportStore = create<ExportState>((set) => {
                   height: c.overlayBounds.height,
                 }
               : undefined,
+          canvasBounds: clipBounds
+            ? {
+                x: clipBounds.x,
+                y: clipBounds.y,
+                width: clipBounds.width,
+                height: clipBounds.height,
+              }
+            : undefined,
+          crop:
+            trackIndex === 0 && c.cropOverride
+              ? {
+                  x: c.cropOverride.x,
+                  y: c.cropOverride.y,
+                  width: c.cropOverride.width,
+                  height: c.cropOverride.height,
+                }
+              : undefined,
+          transitionIn: isActiveTransition(c.transitionIn) ? { ...c.transitionIn } : undefined,
+          transitionOut: isActiveTransition(c.transitionOut) ? { ...c.transitionOut } : undefined,
         };
       });
-
-      const activeCanvasBounds =
-        project.fitMode === 'fit'
-          ? project.fitBounds
-          : project.fitMode === 'stretch'
-          ? project.stretchBounds
-          : null;
 
       const job: ExportJob = {
         sources: exportSources,
@@ -316,14 +345,7 @@ export const useExportStore = create<ExportState>((set) => {
           width: project.crop.width,
           height: project.crop.height,
         },
-        canvasBounds: activeCanvasBounds
-          ? {
-              x: activeCanvasBounds.x,
-              y: activeCanvasBounds.y,
-              width: activeCanvasBounds.width,
-              height: activeCanvasBounds.height,
-            }
-          : undefined,
+        canvasBounds: undefined,
         padding: {
           mode: project.padding.mode,
           color: project.padding.color,

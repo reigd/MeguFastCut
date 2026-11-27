@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useProjectStore } from '../../stores/project';
+import { useUiStore } from '../../stores/ui';
 import { openVideoFileDialog, getClipThumbnail } from '../../shared/ipc';
 import { SourceFile } from '../../shared/types';
 import { t, formatTimecode, formatFileSize } from '../../shared/i18n';
@@ -12,6 +13,8 @@ import {
   safeConvertFileSrc,
 } from '../../shared/media-formats';
 import { setDraggingSourceId } from '../../shared/drag-state';
+import { isActiveTransition } from '../../shared/transitions';
+import { TransitionsPanel } from '../transitions/TransitionsPanel';
 import {
   FilmIcon,
   ImageIcon,
@@ -22,6 +25,7 @@ import {
   VolumeIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  TransitionIcon,
 } from '../../components/icons';
 import { Tooltip } from '../../components/Tooltip/Tooltip';
 
@@ -414,9 +418,26 @@ const SourceCard: React.FC<SourceCardProps> = ({
 
 export const MediaLibrary: React.FC = () => {
   const { sources, project, importSources, addClipFromSource, removeSource } = useProjectStore();
+  const {
+    leftSidebarTab,
+    isLeftSidebarCollapsed,
+    setLeftSidebarTab,
+    setLeftSidebarCollapsed,
+  } = useUiStore();
   const [isDragOver, setIsDragOver] = useState(false);
-  const [isCollapsed, setIsCollapsed] = useState(false);
   const [filter, setFilter] = useState<MediaFilter>('all');
+
+  const activeTransitionsCount = useMemo(
+    () =>
+      project.clips.reduce(
+        (sum, c) =>
+          sum +
+          (isActiveTransition(c.transitionIn) ? 1 : 0) +
+          (isActiveTransition(c.transitionOut) ? 1 : 0),
+        0
+      ),
+    [project.clips]
+  );
 
   const handleOpenDialog = async () => {
     const paths = await openVideoFileDialog();
@@ -483,24 +504,26 @@ export const MediaLibrary: React.FC = () => {
   const hasMultipleKinds =
     Number(kindCounts.video > 0) + Number(kindCounts.image > 0) + Number(kindCounts.audio > 0) > 1;
 
-  if (isCollapsed) {
+  if (isLeftSidebarCollapsed) {
     return (
       <div
         style={{
-          width: '36px',
+          width: '38px',
           background: 'var(--bg-surface)',
           borderRight: '1px solid var(--border-subtle)',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           paddingTop: 'var(--space-2)',
+          gap: 'var(--space-2)',
           flexShrink: 0,
         }}
       >
         <Tooltip content={t('media_library.expand')}>
           <button
             type="button"
-            onClick={() => setIsCollapsed(false)}
+            aria-label={t('media_library.expand')}
+            onClick={() => setLeftSidebarCollapsed(false)}
             style={{
               background: 'transparent',
               border: 'none',
@@ -516,32 +539,70 @@ export const MediaLibrary: React.FC = () => {
             <ChevronRightIcon size={16} />
           </button>
         </Tooltip>
-        <span
-          style={{
-            writingMode: 'vertical-rl',
-            transform: 'rotate(180deg)',
-            fontSize: 'var(--text-11)',
-            fontWeight: 600,
-            color: 'var(--text-muted)',
-            marginTop: 'var(--space-4)',
-            letterSpacing: '1px',
-          }}
-        >
-          {t('media_library.title')} ({sources.length})
-        </span>
+
+        <Tooltip content={t('media_library.title')}>
+          <button
+            type="button"
+            aria-label={t('media_library.title')}
+            onClick={() => {
+              setLeftSidebarTab('media');
+              setLeftSidebarCollapsed(false);
+            }}
+            style={{
+              width: '28px',
+              height: '28px',
+              borderRadius: 'var(--r-sm)',
+              border: 'none',
+              background: leftSidebarTab === 'media' ? 'var(--accent-muted)' : 'transparent',
+              color: leftSidebarTab === 'media' ? 'var(--accent)' : 'var(--text-secondary)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+            }}
+          >
+            <FilmIcon size={15} />
+          </button>
+        </Tooltip>
+
+        <Tooltip content={t('transitions.tab_title')}>
+          <button
+            type="button"
+            aria-label={t('transitions.tab_title')}
+            onClick={() => {
+              setLeftSidebarTab('transitions');
+              setLeftSidebarCollapsed(false);
+            }}
+            style={{
+              width: '28px',
+              height: '28px',
+              borderRadius: 'var(--r-sm)',
+              border: 'none',
+              background: leftSidebarTab === 'transitions' ? 'var(--accent-muted)' : 'transparent',
+              color: leftSidebarTab === 'transitions' ? 'var(--accent)' : 'var(--text-secondary)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+            }}
+          >
+            <TransitionIcon size={15} />
+          </button>
+        </Tooltip>
       </div>
     );
   }
 
   return (
     <aside
-      aria-label="Media Library"
+      aria-label={t('media_library.title')}
       data-drop-zone="media-library"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       style={{
-        width: '270px',
+        width: '296px',
+        minHeight: 0,
         background: 'var(--bg-surface)',
         borderRight: '1px solid var(--border-subtle)',
         display: 'flex',
@@ -551,263 +612,360 @@ export const MediaLibrary: React.FC = () => {
         position: 'relative',
       }}
     >
-      {/* Top Header Bar */}
+      {/* Top Header Bar: Media Tab | Transitions Tab (right of Media) | Collapse */}
       <div
         style={{
           height: '42px',
-          padding: '0 var(--space-3)',
+          padding: '0 var(--space-2)',
           borderBottom: '1px solid var(--border-subtle)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          gap: '4px',
           flexShrink: 0,
           background: 'var(--bg-surface)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-          <FilmIcon size={15} style={{ color: 'var(--accent)' }} />
-          <h3 style={{ fontSize: 'var(--text-13)', fontWeight: 600, color: 'var(--text-primary)' }}>
-            {t('media_library.title')}
-          </h3>
-          <span
-            style={{
-              fontSize: 'var(--text-10)',
-              fontWeight: 600,
-              padding: '1px 6px',
-              borderRadius: 'var(--r-full)',
-              background: 'var(--bg-elevated)',
-              color: 'var(--text-secondary)',
-              border: '1px solid var(--border-subtle)',
-            }}
-          >
-            {sources.length}
-          </span>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          <button
-            type="button"
-            onClick={handleOpenDialog}
-            title={t('media_library.import_btn')}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-              minHeight: '26px',
-              padding: '4px 9px',
-              background: 'var(--accent-muted)',
-              border: '1px solid var(--accent)',
-              borderRadius: 'var(--r-md)',
-              color: 'var(--accent)',
-              fontSize: 'var(--text-11)',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all var(--dur-fast) var(--ease-out)',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'var(--accent)';
-              e.currentTarget.style.color = 'var(--accent-contrast)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'var(--accent-muted)';
-              e.currentTarget.style.color = 'var(--accent)';
-            }}
-          >
-            <FolderOpenIcon size={13} />
-            <span>{t('media_library.import_btn')}</span>
-          </button>
-
-          <Tooltip content={t('media_library.collapse')}>
-            <button
-              type="button"
-              aria-label={t('media_library.collapse')}
-              onClick={() => setIsCollapsed(true)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--text-muted)',
-                cursor: 'pointer',
-                width: '26px',
-                height: '26px',
-                borderRadius: 'var(--r-sm)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <ChevronLeftIcon size={16} />
-            </button>
-          </Tooltip>
-        </div>
-      </div>
-
-      {/* Media Kind Filter Pills (shown when library contains mixed media types) */}
-      {hasMultipleKinds && (
         <div
+          role="tablist"
+          aria-label={t('media_library.project_media')}
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '4px',
-            padding: '6px var(--space-3)',
-            borderBottom: '1px solid var(--border-subtle)',
-            flexShrink: 0,
-            flexWrap: 'wrap',
+            gap: '3px',
+            flex: 1,
+            minWidth: 0,
           }}
         >
-          {(
-            [
-              { id: 'all' as const, label: t('media_library.filter_all'), count: sources.length },
-              ...(kindCounts.video > 0
-                ? [{ id: 'video' as const, label: t('media_library.filter_video'), count: kindCounts.video }]
-                : []),
-              ...(kindCounts.image > 0
-                ? [{ id: 'image' as const, label: t('media_library.filter_photo'), count: kindCounts.image }]
-                : []),
-              ...(kindCounts.audio > 0
-                ? [{ id: 'audio' as const, label: t('media_library.filter_audio'), count: kindCounts.audio }]
-                : []),
-            ]
-          ).map((item) => {
-            const active = filter === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setFilter(item.id)}
-                style={{
-                  minHeight: '24px',
-                  padding: '3px 8px',
-                  borderRadius: 'var(--r-full)',
-                  border: `1px solid ${active ? 'var(--accent)' : 'var(--border-subtle)'}`,
-                  background: active ? 'var(--accent-muted)' : 'transparent',
-                  color: active ? 'var(--accent)' : 'var(--text-secondary)',
-                  fontSize: 'var(--text-10)',
-                  fontWeight: active ? 600 : 500,
-                  cursor: 'pointer',
-                  transition: 'all var(--dur-fast) var(--ease-out)',
-                }}
-              >
-                {item.label} ({item.count})
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Sources Grid or Empty State */}
-      <div
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: 'var(--space-3)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 'var(--space-3)',
-          background: isDragOver ? 'var(--accent-muted)' : 'transparent',
-          transition: 'background var(--dur-fast) var(--ease-out)',
-        }}
-      >
-        {sources.length === 0 ? (
-          <div
-            onClick={handleOpenDialog}
+          {/* Tab 1: Media */}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={leftSidebarTab === 'media'}
+            data-testid="sidebar-tab-media"
+            onClick={() => setLeftSidebarTab('media')}
             style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
+              display: 'inline-flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              textAlign: 'center',
-              padding: 'var(--space-4)',
-              border: '1.5px dashed var(--border-strong)',
-              borderRadius: 'var(--r-lg)',
+              gap: '5px',
+              height: '30px',
+              padding: '0 8px',
+              borderRadius: 'var(--r-md)',
+              border: `1px solid ${leftSidebarTab === 'media' ? 'var(--border-strong)' : 'transparent'}`,
+              background: leftSidebarTab === 'media' ? 'var(--bg-elevated)' : 'transparent',
+              color: leftSidebarTab === 'media' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              fontSize: 'var(--text-12)',
+              fontWeight: leftSidebarTab === 'media' ? 600 : 500,
               cursor: 'pointer',
-              background: 'var(--bg-elevated)',
-              gap: 'var(--space-2)',
-              transition: 'border-color var(--dur-fast) var(--ease-out)',
+              whiteSpace: 'nowrap',
+              transition: 'all var(--dur-fast) var(--ease-out)',
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent)')}
-            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-strong)')}
           >
-            <div
-              style={{
-                width: '42px',
-                height: '42px',
-                borderRadius: 'var(--r-full)',
-                background: 'var(--bg-base)',
-                border: '1px solid var(--border-subtle)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--accent)',
-              }}
-            >
-              <FolderOpenIcon size={20} />
-            </div>
-
-            <span
-              style={{
-                fontSize: 'var(--text-12)',
-                fontWeight: 600,
-                color: 'var(--text-primary)',
-              }}
-            >
-              {t('media_library.empty_title')}
-            </span>
-
+            <FilmIcon
+              size={14}
+              style={{ color: leftSidebarTab === 'media' ? 'var(--accent)' : 'currentColor', flexShrink: 0 }}
+            />
+            <span>{t('media_library.title')}</span>
             <span
               style={{
                 fontSize: 'var(--text-10)',
-                color: 'var(--text-muted)',
-                lineHeight: 1.4,
-                maxWidth: '190px',
+                fontWeight: 600,
+                padding: '0 5px',
+                borderRadius: 'var(--r-full)',
+                background: 'var(--bg-inset)',
+                color: 'var(--text-secondary)',
+                border: '1px solid var(--border-subtle)',
+                lineHeight: '16px',
               }}
             >
-              {t('media_library.empty_hint')}
+              {sources.length}
             </span>
+          </button>
 
+          {/* Tab 2: Transitions (immediately to the right of Media) */}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={leftSidebarTab === 'transitions'}
+            data-testid="sidebar-tab-transitions"
+            onClick={() => setLeftSidebarTab('transitions')}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              height: '30px',
+              padding: '0 8px',
+              borderRadius: 'var(--r-md)',
+              border: `1px solid ${leftSidebarTab === 'transitions' ? 'var(--border-strong)' : 'transparent'}`,
+              background: leftSidebarTab === 'transitions' ? 'var(--bg-elevated)' : 'transparent',
+              color:
+                leftSidebarTab === 'transitions' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              fontSize: 'var(--text-12)',
+              fontWeight: leftSidebarTab === 'transitions' ? 600 : 500,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              transition: 'all var(--dur-fast) var(--ease-out)',
+            }}
+          >
+            <TransitionIcon
+              size={14}
+              style={{
+                color: leftSidebarTab === 'transitions' ? 'var(--accent)' : 'currentColor',
+                flexShrink: 0,
+              }}
+            />
+            <span>{t('transitions.tab_title')}</span>
+            {activeTransitionsCount > 0 && (
+              <span
+                style={{
+                  fontSize: 'var(--text-10)',
+                  fontWeight: 600,
+                  padding: '0 5px',
+                  borderRadius: 'var(--r-full)',
+                  background: 'var(--accent-muted)',
+                  color: 'var(--accent)',
+                  border: '1px solid var(--accent)',
+                  lineHeight: '16px',
+                }}
+              >
+                {activeTransitionsCount}
+              </span>
+            )}
+          </button>
+        </div>
+
+        <Tooltip content={t('media_library.collapse')}>
+          <button
+            type="button"
+            aria-label={t('media_library.collapse')}
+            onClick={() => setLeftSidebarCollapsed(true)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--text-muted)',
+              cursor: 'pointer',
+              width: '26px',
+              height: '26px',
+              borderRadius: 'var(--r-sm)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+            }}
+          >
+            <ChevronLeftIcon size={16} />
+          </button>
+        </Tooltip>
+      </div>
+
+      {leftSidebarTab === 'transitions' ? (
+        <TransitionsPanel />
+      ) : (
+        <>
+          {/* Media Action Bar (Import + Kind Filters) */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '6px',
+              padding: '6px var(--space-3)',
+              borderBottom: '1px solid var(--border-subtle)',
+              flexShrink: 0,
+              flexWrap: 'wrap',
+            }}
+          >
             <button
               type="button"
+              onClick={handleOpenDialog}
+              title={t('media_library.import_btn')}
               style={{
-                marginTop: 'var(--space-2)',
-                padding: '4px 10px',
-                background: 'var(--accent)',
-                border: 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                minHeight: '26px',
+                padding: '4px 9px',
+                background: 'var(--accent-muted)',
+                border: '1px solid var(--accent)',
                 borderRadius: 'var(--r-md)',
-                color: '#ffffff',
+                color: 'var(--accent)',
                 fontSize: 'var(--text-11)',
                 fontWeight: 600,
                 cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
+                transition: 'all var(--dur-fast) var(--ease-out)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--accent)';
+                e.currentTarget.style.color = 'var(--accent-contrast)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'var(--accent-muted)';
+                e.currentTarget.style.color = 'var(--accent)';
               }}
             >
-              <PlusIcon size={14} />
+              <FolderOpenIcon size={13} />
               <span>{t('media_library.import_btn')}</span>
             </button>
+
+            {hasMultipleKinds && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+                {(
+                  [
+                    { id: 'all' as const, label: t('media_library.filter_all'), count: sources.length },
+                    ...(kindCounts.video > 0
+                      ? [{ id: 'video' as const, label: t('media_library.filter_video'), count: kindCounts.video }]
+                      : []),
+                    ...(kindCounts.image > 0
+                      ? [{ id: 'image' as const, label: t('media_library.filter_photo'), count: kindCounts.image }]
+                      : []),
+                    ...(kindCounts.audio > 0
+                      ? [{ id: 'audio' as const, label: t('media_library.filter_audio'), count: kindCounts.audio }]
+                      : []),
+                  ]
+                ).map((item) => {
+                  const active = filter === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setFilter(item.id)}
+                      style={{
+                        minHeight: '24px',
+                        padding: '3px 7px',
+                        borderRadius: 'var(--r-full)',
+                        border: `1px solid ${active ? 'var(--accent)' : 'var(--border-subtle)'}`,
+                        background: active ? 'var(--accent-muted)' : 'transparent',
+                        color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                        fontSize: 'var(--text-10)',
+                        fontWeight: active ? 600 : 500,
+                        cursor: 'pointer',
+                        transition: 'all var(--dur-fast) var(--ease-out)',
+                      }}
+                    >
+                      {item.label} ({item.count})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
-        ) : (
+
+          {/* Sources Grid or Empty State */}
           <div
             style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(115px, 1fr))',
-              gap: 'var(--space-2)',
+              flex: 1,
+              overflowY: 'auto',
+              padding: 'var(--space-3)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 'var(--space-3)',
+              background: isDragOver ? 'var(--accent-muted)' : 'transparent',
+              transition: 'background var(--dur-fast) var(--ease-out)',
             }}
           >
-            {filteredSources.map((source) => (
-              <SourceCard
-                key={source.id}
-                source={source}
-                usageCount={usageCounts[source.id] || 0}
-                hasClipsOnTimeline={project.clips.length > 0}
-                onAddMain={(id) => addClipFromSource(id)}
-                onAddOverlay={(id) => addClipFromSource(id, { asOverlay: true })}
-                onRemove={removeSource}
-              />
-            ))}
+            {sources.length === 0 ? (
+              <div
+                onClick={handleOpenDialog}
+                style={{
+                  flex: 1,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  textAlign: 'center',
+                  padding: 'var(--space-4)',
+                  border: '1.5px dashed var(--border-strong)',
+                  borderRadius: 'var(--r-lg)',
+                  cursor: 'pointer',
+                  background: 'var(--bg-elevated)',
+                  gap: 'var(--space-2)',
+                  transition: 'border-color var(--dur-fast) var(--ease-out)',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent)')}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-strong)')}
+              >
+                <div
+                  style={{
+                    width: '42px',
+                    height: '42px',
+                    borderRadius: 'var(--r-full)',
+                    background: 'var(--bg-base)',
+                    border: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: 'var(--accent)',
+                  }}
+                >
+                  <FolderOpenIcon size={20} />
+                </div>
+
+                <span
+                  style={{
+                    fontSize: 'var(--text-12)',
+                    fontWeight: 600,
+                    color: 'var(--text-primary)',
+                  }}
+                >
+                  {t('media_library.empty_title')}
+                </span>
+
+                <span
+                  style={{
+                    fontSize: 'var(--text-10)',
+                    color: 'var(--text-muted)',
+                    lineHeight: 1.4,
+                    maxWidth: '190px',
+                  }}
+                >
+                  {t('media_library.empty_hint')}
+                </span>
+
+                <button
+                  type="button"
+                  style={{
+                    marginTop: 'var(--space-2)',
+                    padding: '4px 10px',
+                    background: 'var(--accent)',
+                    border: 'none',
+                    borderRadius: 'var(--r-md)',
+                    color: '#ffffff',
+                    fontSize: 'var(--text-11)',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <PlusIcon size={14} />
+                  <span>{t('media_library.import_btn')}</span>
+                </button>
+              </div>
+            ) : (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(115px, 1fr))',
+                  gap: 'var(--space-2)',
+                }}
+              >
+                {filteredSources.map((source) => (
+                  <SourceCard
+                    key={source.id}
+                    source={source}
+                    usageCount={usageCounts[source.id] || 0}
+                    hasClipsOnTimeline={project.clips.length > 0}
+                    onAddMain={(id) => addClipFromSource(id)}
+                    onAddOverlay={(id) => addClipFromSource(id, { asOverlay: true })}
+                    onRemove={removeSource}
+                  />
+                ))}
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
 
       {/* Drag Over Hint Overlay */}
       {isDragOver && (

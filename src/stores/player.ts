@@ -43,6 +43,7 @@ interface PlayerState {
   activeClipIndex: number;
   previewQuality: PreviewQuality;
   proxyStatus: Record<string, 'ready' | 'generating' | 'error'>;
+  bypassVideoFx: boolean;
 
   // Actions
   play: () => void;
@@ -62,6 +63,7 @@ interface PlayerState {
   setActiveClipIndex: (idx: number) => void;
   setPreviewQuality: (quality: PreviewQuality) => void;
   setProxyStatus: (key: string, status: 'ready' | 'generating' | 'error') => void;
+  setBypassVideoFx: (bypass: boolean) => void;
 }
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
@@ -77,6 +79,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   activeClipIndex: 0,
   previewQuality: loadStoredPreviewQuality(),
   proxyStatus: {},
+  bypassVideoFx: false,
 
   play: () => set({ isPlaying: true }),
   pause: () => set({ isPlaying: false }),
@@ -141,4 +144,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       proxyStatus: { ...s.proxyStatus, [key]: status },
     }));
   },
+
+  setBypassVideoFx: (bypassVideoFx: boolean) => set({ bypassVideoFx }),
 }));

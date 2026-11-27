@@ -27,6 +27,8 @@ import {
   getTimelineTotalDurationMs,
   isImageSource,
 } from '../shared/media-formats';
+import { hasAnyActiveTransition } from '../shared/transitions';
+import { hasActiveVideoAdjustments } from '../shared/video-fx';
 import {
   TRACK_GUTTER_WIDTH,
   computeTracksLayout,
@@ -57,6 +59,8 @@ export const App: React.FC = () => {
     closeProject,
     splitClip,
     removeClip,
+    copyClip,
+    pasteClip,
     undo,
     redo,
   } = useProjectStore();
@@ -276,17 +280,21 @@ export const App: React.FC = () => {
   const isFastLosslessEligible =
     !hasOverlays &&
     !hasImages &&
+    !hasAnyActiveTransition(project.clips) &&
     enabledMainClips.length === 1 &&
     project.aspect.id === 'original' &&
     project.fitMode === 'fit' &&
     !project.fitBounds &&
     !project.stretchBounds &&
+    !enabledMainClips[0].fitBounds &&
+    !enabledMainClips[0].stretchBounds &&
+    !enabledMainClips[0].cropOverride &&
     project.output.resolutionMode === 'auto' &&
     enabledMainClips[0].rotate === 0 &&
     !enabledMainClips[0].flipH &&
     !enabledMainClips[0].flipV &&
     Math.abs((enabledMainClips[0].speed ?? 1) - 1) < 0.001 &&
-    (enabledMainClips[0].sharpness ?? 0) <= 0.001 &&
+    !hasActiveVideoAdjustments(enabledMainClips[0]) &&
     Math.abs(project.audio.volumeDb) < 0.1 &&
     Math.abs(enabledMainClips[0].volumeDb) < 0.1 &&
     !project.audio.muted &&
@@ -296,10 +304,11 @@ export const App: React.FC = () => {
   // Keyboard navigation & Shortcuts
   useEffect(() => {
     const handleKeyDown = async (e: KeyboardEvent) => {
-      // Don't trigger transport shortcuts if an input/textarea is focused
+      // Don't trigger transport shortcuts if an input/textarea or slider is focused
       if (
         document.activeElement &&
-        ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)
+        (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) ||
+          document.activeElement.getAttribute('role') === 'slider')
       ) {
         return;
       }
@@ -335,6 +344,36 @@ export const App: React.FC = () => {
         e.preventDefault();
         if (project.clips.length > 0) {
           openExportModal();
+        }
+      } else if (isCmdOrCtrl && !e.shiftKey && !e.altKey && isKey('KeyC', 'c')) {
+        const { isSettingsOpen, isExportOpen, isReplaceConfirmOpen, isShortcutsOpen, isWhatsNewOpen } =
+          useUiStore.getState();
+        const hasTextSelection = Boolean(window.getSelection()?.toString());
+        if (
+          !isSettingsOpen &&
+          !isExportOpen &&
+          !isReplaceConfirmOpen &&
+          !isShortcutsOpen &&
+          !isWhatsNewOpen &&
+          !hasTextSelection &&
+          project.clips.length > 0
+        ) {
+          e.preventDefault();
+          copyClip();
+        }
+      } else if (isCmdOrCtrl && !e.shiftKey && !e.altKey && isKey('KeyV', 'v')) {
+        const { isSettingsOpen, isExportOpen, isReplaceConfirmOpen, isShortcutsOpen, isWhatsNewOpen } =
+          useUiStore.getState();
+        if (
+          !isSettingsOpen &&
+          !isExportOpen &&
+          !isReplaceConfirmOpen &&
+          !isShortcutsOpen &&
+          !isWhatsNewOpen &&
+          useProjectStore.getState().copiedClip
+        ) {
+          e.preventDefault();
+          pasteClip();
         }
       } else if (isCmdOrCtrl && (e.code === 'Comma' || e.key === ',')) {
         e.preventDefault();
@@ -433,6 +472,8 @@ export const App: React.FC = () => {
     activeClipId,
     splitClip,
     removeClip,
+    copyClip,
+    pasteClip,
     undo,
     redo,
     toggleSnapping,

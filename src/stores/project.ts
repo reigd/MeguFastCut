@@ -11,7 +11,19 @@ import {
   AudioSettings,
   RotateAngle,
   ProbeResult,
+  ClipTransition,
+  VideoAdjustments,
+  VideoFxCategory,
 } from '../shared/types';
+import {
+  DEFAULT_VIDEO_ADJUSTMENTS,
+  VIDEO_PARAM_SPECS,
+  VideoAdjustmentKey,
+  clampVideoAdjustment,
+  hasActiveVideoAdjustments,
+  resolveClipVideoAdjustments,
+} from '../shared/video-fx';
+import { computeMainTrackTiming, isActiveTransition } from '../shared/transitions';
 import { probeFile, generateImageProxy, saveRasterizedSvg } from '../shared/ipc';
 import { useHistoryStore } from './history';
 import { usePlayerStore } from './player';
@@ -70,6 +82,7 @@ interface ProjectState {
   sources: SourceFile[];
   project: Project;
   activeClipId: string | null;
+  copiedClip: Clip | null;
   draft: ProjectDraft | null;
   recentFiles: RecentItem[];
   isLoading: boolean;
@@ -94,6 +107,8 @@ interface ProjectState {
   fitOverlayToCanvas: (clipId: string) => void;
   removeClip: (clipId: string) => void;
   toggleClipEnabled: (clipId: string) => void;
+  copyClip: (clipId?: string) => void;
+  pasteClip: (beforeClipId?: string) => void;
   duplicateClip: (clipId: string) => void;
   splitClip: (clipId: string, splitTimeMs: number) => void;
   trimClip: (
@@ -110,9 +125,9 @@ interface ProjectState {
   setActiveClipId: (id: string | null) => void;
   setAspect: (aspect: AspectSetting, syncCrop?: boolean) => void;
   setFitMode: (mode: FitMode) => void;
-  setCrop: (crop: CropRect) => void;
-  setFitBounds: (bounds: CropRect | null) => void;
-  setStretchBounds: (bounds: CropRect | null) => void;
+  setCrop: (crop: CropRect, clipId?: string) => void;
+  setFitBounds: (bounds: CropRect | null, clipId?: string) => void;
+  setStretchBounds: (bounds: CropRect | null, clipId?: string) => void;
   setPadding: (padding: PadSetting) => void;
   setRotate: (clipId: string, rotate: RotateAngle) => void;
   rotateActiveClip: (direction: 'cw' | 'ccw') => void;
@@ -126,6 +141,27 @@ interface ProjectState {
   setClipSpeed: (clipId: string, speed: number) => void;
   setClipSharpness: (clipId: string, sharpness: number, recordHistory?: boolean) => void;
   applySharpnessToAll: () => void;
+  setClipVideoAdjustment: (
+    clipId: string,
+    key: VideoAdjustmentKey,
+    value: number,
+    recordHistory?: boolean
+  ) => void;
+  setClipVideoAdjustments: (
+    clipId: string,
+    patch: Partial<VideoAdjustments>,
+    description?: string,
+    recordHistory?: boolean
+  ) => void;
+  resetClipVideoAdjustments: (
+    clipId: string,
+    category?: Exclude<VideoFxCategory, 'all'>
+  ) => void;
+  applyVideoAdjustmentsToAll: () => void;
+  setClipTransitionIn: (clipId: string, transition: ClipTransition | null, recordHistory?: boolean) => void;
+  setClipTransitionOut: (clipId: string, transition: ClipTransition | null, recordHistory?: boolean) => void;
+  applyTransitionToAllCuts: (transition: ClipTransition) => void;
+  clearAllTransitions: () => void;
   updateSourceAfterReplace: (sourceId: string, newProbe: ProbeResult) => void;
 }
 
@@ -143,9 +179,38 @@ export function stripSourceTransientPaths(source: SourceFile): SourceFile {
 }
 
 export function sanitizeProjectDraft(draft: ProjectDraft): ProjectDraft {
+  const legacyFitBounds = draft.project?.fitBounds ?? null;
+  const legacyStretchBounds = draft.project?.stretchBounds ?? null;
+  let clips = draft.project?.clips || [];
+
+  if ((legacyFitBounds || legacyStretchBounds) && clips.length > 0) {
+    const targetId =
+      (draft.activeClipId && clips.some((c) => c.id === draft.activeClipId)
+        ? draft.activeClipId
+        : undefined) ||
+      clips.find((c) => getClipTrackIndex(c) === 0)?.id ||
+      clips[0]?.id;
+
+    clips = clips.map((c) => {
+      if (c.id !== targetId) return c;
+      return {
+        ...c,
+        fitBounds: c.fitBounds ?? (legacyFitBounds ? { ...legacyFitBounds } : undefined),
+        stretchBounds:
+          c.stretchBounds ?? (legacyStretchBounds ? { ...legacyStretchBounds } : undefined),
+      };
+    });
+  }
+
   return {
     ...draft,
     sources: draft.sources.map(stripSourceTransientPaths),
+    project: {
+      ...draft.project,
+      clips,
+      fitBounds: null,
+      stretchBounds: null,
+    },
   };
 }
 
@@ -353,6 +418,57 @@ function cancelPendingAutoSave() {
   }
 }
 
+function cloneClipFields(clip: Clip): Clip {
+  return {
+    ...clip,
+    overlayBounds: clip.overlayBounds ? { ...clip.overlayBounds } : undefined,
+    cropOverride: clip.cropOverride ? { ...clip.cropOverride } : undefined,
+    fitBounds: clip.fitBounds ? { ...clip.fitBounds } : undefined,
+    stretchBounds: clip.stretchBounds ? { ...clip.stretchBounds } : undefined,
+    videoAdjustments: clip.videoAdjustments ? { ...clip.videoAdjustments } : undefined,
+    transitionIn: clip.transitionIn ? { ...clip.transitionIn } : undefined,
+    transitionOut: clip.transitionOut ? { ...clip.transitionOut } : undefined,
+  };
+}
+
+function resolveTargetMainClip(
+  clips: Clip[],
+  activeClipId: string | null,
+  clipId?: string
+): Clip | undefined {
+  if (clipId) {
+    const explicit = clips.find((c) => c.id === clipId);
+    if (explicit) return explicit;
+  }
+  if (activeClipId) {
+    const active = clips.find((c) => c.id === activeClipId);
+    if (active && getClipTrackIndex(active) === 0) {
+      return active;
+    }
+  }
+  const { items } = computeMainTrackTiming(clips);
+  if (items.length > 0) {
+    let currMs = 0;
+    try {
+      currMs = usePlayerStore.getState().currentTimeMs;
+    } catch {
+      currMs = 0;
+    }
+    const atPlayhead = items.find(
+      (it, idx) =>
+        currMs >= it.playStartMs &&
+        (currMs < it.playEndMs || (idx === items.length - 1 && currMs <= it.playEndMs))
+    );
+    if (atPlayhead) return atPlayhead.clip;
+    return items[0].clip;
+  }
+  return clips.find((c) => getClipTrackIndex(c) === 0) || clips[0];
+}
+
+function createClipId(): string {
+  return `clip-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+}
+
 export const useProjectStore = create<ProjectState>((set, get) => ({
   isProjectOpen: false,
   sources: [],
@@ -366,6 +482,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     audio: initialAudio,
   },
   activeClipId: null,
+  copiedClip: null,
   draft: initialDraft,
   recentFiles: loadRecentFiles(),
   isLoading: false,
@@ -388,6 +505,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         audio: initialAudio,
       },
       activeClipId: null,
+      copiedClip: null,
     });
   },
 
@@ -932,6 +1050,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         audio: initialAudio,
       },
       activeClipId: null,
+      copiedClip: null,
       draft: currentDraft,
     });
   },
@@ -993,6 +1112,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         audio: initialAudio,
       },
       activeClipId: null,
+      copiedClip: null,
       draft: null,
     });
   },
@@ -1186,31 +1306,135 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set((s) => ({ project: { ...s.project, clips } }));
   },
 
+  copyClip: (clipId?: string) => {
+    const { project, activeClipId } = get();
+    const clips = project.clips;
+    if (clips.length === 0) return;
+
+    let target = clipId ? clips.find((c) => c.id === clipId) : undefined;
+    if (!target && activeClipId) {
+      target = clips.find((c) => c.id === activeClipId);
+    }
+    if (!target) {
+      const currentMs = usePlayerStore.getState().currentTimeMs;
+      target =
+        clips.find((c) => {
+          if (!c.enabled) return false;
+          const start = getClipStartMs(c, clips);
+          return currentMs >= start && currentMs < start + getClipDurationMs(c);
+        }) || clips[0];
+    }
+    if (!target) return;
+
+    set({
+      copiedClip: cloneClipFields(target),
+      activeClipId: target.id,
+    });
+  },
+
+  pasteClip: (beforeClipId?: string) => {
+    const state = get();
+    const copied = state.copiedClip;
+    if (!copied) return;
+    if (!state.sources.some((s) => s.id === copied.sourceId)) return;
+
+    const previousClips = state.project.clips;
+    useHistoryStore.getState().recordChange(previousClips, 'Paste clip');
+
+    if (previousClips.length === 0) {
+      const pastedClip: Clip = {
+        ...cloneClipFields(copied),
+        id: createClipId(),
+        startMs: 0,
+        trackIndex: 0,
+      };
+      set((s) => ({
+        project: { ...s.project, clips: [pastedClip] },
+        activeClipId: pastedClip.id,
+        isProjectOpen: true,
+      }));
+      usePlayerStore.getState().seek(0);
+      return;
+    }
+
+    let anchorIndex = beforeClipId ? previousClips.findIndex((c) => c.id === beforeClipId) : -1;
+    if (anchorIndex === -1) {
+      anchorIndex = previousClips.findIndex((c) => c.id === copied.id);
+    }
+    if (anchorIndex === -1 && state.activeClipId) {
+      anchorIndex = previousClips.findIndex((c) => c.id === state.activeClipId);
+    }
+    if (anchorIndex === -1) {
+      anchorIndex = 0;
+    }
+
+    const anchorClip = previousClips[anchorIndex];
+    const targetTrack = getClipTrackIndex(anchorClip);
+    const insertStartMs = getClipStartMs(anchorClip, previousClips);
+    const pasteDurMs = getClipDurationMs(copied);
+
+    const shiftedClips = previousClips.map((c, idx) => {
+      const cTrack = getClipTrackIndex(c);
+      const cStart = getClipStartMs(c, previousClips);
+      if (cTrack === targetTrack && (idx >= anchorIndex || cStart > insertStartMs)) {
+        return { ...c, startMs: cStart + pasteDurMs };
+      }
+      if (c.startMs === undefined) {
+        return { ...c, startMs: cStart };
+      }
+      return c;
+    });
+
+    const pastedClip: Clip = {
+      ...cloneClipFields(copied),
+      id: createClipId(),
+      startMs: insertStartMs,
+      trackIndex: targetTrack,
+    };
+
+    shiftedClips.splice(anchorIndex, 0, pastedClip);
+    const nextClips = sortClipsByTrackAndStart(compactOverlayTracks(shiftedClips));
+
+    set((s) => ({
+      project: { ...s.project, clips: nextClips },
+      activeClipId: pastedClip.id,
+      isProjectOpen: true,
+    }));
+    usePlayerStore.getState().seek(insertStartMs);
+  },
+
   duplicateClip: (clipId: string) => {
     const clips = [...get().project.clips];
     const index = clips.findIndex((c) => c.id === clipId);
     if (index === -1) return;
     useHistoryStore.getState().recordChange(clips, 'Duplicate clip');
+
     const original = clips[index];
     const origDur = getClipDurationMs(original);
-    const origStart = getClipStartMs(original, clips);
+    const insertStartMs = getClipStartMs(original, clips);
     const origTrack = getClipTrackIndex(original);
-    const duplicateStart = origStart + origDur;
-    const duplicateTrack =
-      origTrack > 0 && hasTrackOverlap(clips, origTrack, duplicateStart, duplicateStart + origDur)
-        ? findFreeOverlayTrack(clips, duplicateStart, duplicateStart + origDur, origTrack + 1)
-        : origTrack;
+
+    const shiftedClips = clips.map((c, idx) => {
+      const cTrack = getClipTrackIndex(c);
+      const cStart = getClipStartMs(c, clips);
+      if (cTrack === origTrack && (idx >= index || cStart > insertStartMs)) {
+        return { ...c, startMs: cStart + origDur };
+      }
+      if (c.startMs === undefined) {
+        return { ...c, startMs: cStart };
+      }
+      return c;
+    });
 
     const duplicate: Clip = {
-      ...original,
-      id: `clip-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      startMs: duplicateStart,
-      trackIndex: duplicateTrack,
-      overlayBounds: original.overlayBounds ? { ...original.overlayBounds } : undefined,
+      ...cloneClipFields(original),
+      id: createClipId(),
+      startMs: insertStartMs,
+      trackIndex: origTrack,
     };
-    clips.splice(index + 1, 0, duplicate);
+    shiftedClips.splice(index, 0, duplicate);
     set((s) => ({
-      project: { ...s.project, clips: sortClipsByTrackAndStart(clips) },
+      project: { ...s.project, clips: sortClipsByTrackAndStart(compactOverlayTracks(shiftedClips)) },
       activeClipId: duplicate.id,
     }));
   },
@@ -1229,18 +1453,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const origStartMs = getClipStartMs(original, clips);
 
     const firstClip: Clip = {
-      ...original,
+      ...cloneClipFields(original),
       outMs: splitTimeMs,
       startMs: origStartMs,
-      overlayBounds: original.overlayBounds ? { ...original.overlayBounds } : undefined,
+      transitionOut: undefined,
     };
 
     const secondClip: Clip = {
-      ...original,
-      id: `clip-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      ...cloneClipFields(original),
+      id: createClipId(),
       inMs: splitTimeMs,
       startMs: origStartMs + splitOffsetMs,
-      overlayBounds: original.overlayBounds ? { ...original.overlayBounds } : undefined,
+      transitionIn: undefined,
     };
 
     clips.splice(index, 1, firstClip, secondClip);
@@ -1327,20 +1551,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   setActiveClipId: (id) => set({ activeClipId: id }),
 
   setAspect: (aspect, syncCrop = false) => {
-    if (!syncCrop || get().project.fitMode !== 'crop') {
+    const state = get();
+    const clearedClips = state.project.clips.map((c) => ({
+      ...c,
+      fitBounds: undefined,
+      stretchBounds: undefined,
+    }));
+
+    if (!syncCrop || state.project.fitMode !== 'crop') {
       set((s) => ({
         project: {
           ...s.project,
           aspect,
+          clips: clearedClips,
           fitBounds: null,
           stretchBounds: null,
         },
       }));
       return;
     }
-    const activeId = get().activeClipId;
-    const activeClip = get().project.clips.find((c) => c.id === activeId);
-    const source = activeClip ? get().sources.find((s) => s.id === activeClip.sourceId) : get().sources[0];
+
+    const targetClip = resolveTargetMainClip(clearedClips, state.activeClipId);
+    const source = targetClip ? state.sources.find((s) => s.id === targetClip.sourceId) : state.sources[0];
     const srcW = source?.probe.video?.width || 1920;
     const srcH = source?.probe.video?.height || 1080;
     const targetRatio = resolveAspectRatio(aspect, srcW, srcH);
@@ -1354,11 +1586,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const heightRatio = Math.max(0.01, Math.min(1, srcRatio / targetRatio));
       crop = { x: 0, y: (1 - heightRatio) / 2, width: 1, height: heightRatio };
     }
+
+    const updatedClips = targetClip
+      ? clearedClips.map((c) => (c.id === targetClip.id ? { ...c, cropOverride: { ...crop } } : c))
+      : clearedClips;
+
     set((s) => ({
       project: {
         ...s.project,
         aspect,
         crop,
+        clips: updatedClips,
         fitBounds: null,
         stretchBounds: null,
       },
@@ -1366,18 +1604,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   setFitMode: (fitMode) => {
-    const currentProject = get().project;
+    const state = get();
+    const currentProject = state.project;
+    const targetClip = resolveTargetMainClip(currentProject.clips, state.activeClipId);
+    const currentClipCrop = targetClip?.cropOverride ?? currentProject.crop;
+
     if (
       fitMode === 'crop' &&
       currentProject.aspect.id !== 'original' &&
-      currentProject.crop.x === 0 &&
-      currentProject.crop.y === 0 &&
-      currentProject.crop.width === 1 &&
-      currentProject.crop.height === 1
+      currentClipCrop.x === 0 &&
+      currentClipCrop.y === 0 &&
+      currentClipCrop.width === 1 &&
+      currentClipCrop.height === 1
     ) {
-      const activeId = get().activeClipId;
-      const activeClip = currentProject.clips.find((c) => c.id === activeId);
-      const source = activeClip ? get().sources.find((s) => s.id === activeClip.sourceId) : get().sources[0];
+      const source = targetClip ? state.sources.find((s) => s.id === targetClip.sourceId) : state.sources[0];
       const srcW = source?.probe.video?.width || 1920;
       const srcH = source?.probe.video?.height || 1080;
       const targetRatio = resolveAspectRatio(currentProject.aspect, srcW, srcH);
@@ -1391,11 +1631,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         const heightRatio = Math.max(0.01, Math.min(1, srcRatio / targetRatio));
         crop = { x: 0, y: (1 - heightRatio) / 2, width: 1, height: heightRatio };
       }
+      const updatedClips = targetClip
+        ? currentProject.clips.map((c) =>
+            c.id === targetClip.id ? { ...c, cropOverride: { ...crop } } : c
+          )
+        : currentProject.clips;
+
       set((s) => ({
         project: {
           ...s.project,
           fitMode,
           crop,
+          clips: updatedClips,
         },
       }));
       return;
@@ -1409,9 +1656,59 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }));
   },
 
-  setCrop: (crop) => set((s) => ({ project: { ...s.project, crop } })),
-  setFitBounds: (fitBounds) => set((s) => ({ project: { ...s.project, fitBounds } })),
-  setStretchBounds: (stretchBounds) => set((s) => ({ project: { ...s.project, stretchBounds } })),
+  setCrop: (crop, clipId) =>
+    set((s) => {
+      const targetClip = resolveTargetMainClip(s.project.clips, s.activeClipId, clipId);
+      if (!targetClip) {
+        return { project: { ...s.project, crop: { ...crop } } };
+      }
+      return {
+        project: {
+          ...s.project,
+          clips: s.project.clips.map((c) =>
+            c.id === targetClip.id ? { ...c, cropOverride: { ...crop } } : c
+          ),
+        },
+      };
+    }),
+
+  setFitBounds: (fitBounds, clipId) =>
+    set((s) => {
+      const targetClip = resolveTargetMainClip(s.project.clips, s.activeClipId, clipId);
+      if (!targetClip) {
+        return { project: { ...s.project, fitBounds } };
+      }
+      return {
+        project: {
+          ...s.project,
+          fitBounds: null,
+          clips: s.project.clips.map((c) =>
+            c.id === targetClip.id
+              ? { ...c, fitBounds: fitBounds ? { ...fitBounds } : null }
+              : c
+          ),
+        },
+      };
+    }),
+
+  setStretchBounds: (stretchBounds, clipId) =>
+    set((s) => {
+      const targetClip = resolveTargetMainClip(s.project.clips, s.activeClipId, clipId);
+      if (!targetClip) {
+        return { project: { ...s.project, stretchBounds } };
+      }
+      return {
+        project: {
+          ...s.project,
+          stretchBounds: null,
+          clips: s.project.clips.map((c) =>
+            c.id === targetClip.id
+              ? { ...c, stretchBounds: stretchBounds ? { ...stretchBounds } : null }
+              : c
+          ),
+        },
+      };
+    }),
   setPadding: (padding) => set((s) => ({ project: { ...s.project, padding } })),
 
   setRotate: (clipId: string, rotate: RotateAngle) => {
@@ -1478,32 +1775,35 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   applyTransformToAll: () => {
-    const activeId = get().activeClipId;
-    const activeClip = get().project.clips.find((c) => c.id === activeId);
+    const state = get();
+    const activeClip = resolveTargetMainClip(state.project.clips, state.activeClipId);
     if (!activeClip) return;
-    useHistoryStore.getState().recordChange(get().project.clips, 'Apply transform to all clips');
-    const clips = get().project.clips.map((c) => ({
+    useHistoryStore.getState().recordChange(state.project.clips, 'Apply transform to all clips');
+    const clips = state.project.clips.map((c) => ({
       ...c,
       rotate: activeClip.rotate,
       flipH: activeClip.flipH,
       flipV: activeClip.flipV,
       cropOverride: activeClip.cropOverride ? { ...activeClip.cropOverride } : undefined,
+      fitBounds: activeClip.fitBounds ? { ...activeClip.fitBounds } : undefined,
+      stretchBounds: activeClip.stretchBounds ? { ...activeClip.stretchBounds } : undefined,
       speed: activeClip.speed ?? 1.0,
     }));
     set((s) => ({ project: { ...s.project, clips } }));
   },
 
   setCropPosition: (pos: 'center' | 'top' | 'bottom' | 'left' | 'right') => {
-    const activeId = get().activeClipId;
-    const currentProject = get().project;
+    const state = get();
+    const activeId = state.activeClipId;
+    const currentProject = state.project;
     const activeClip = currentProject.clips.find((c) => c.id === activeId);
 
     // If an overlay clip is selected, align its overlayBounds on the canvas
     if (activeClip && getClipTrackIndex(activeClip) > 0) {
-      const src = get().sources.find((s) => s.id === activeClip.sourceId);
+      const src = state.sources.find((s) => s.id === activeClip.sourceId);
       const { width: canvasW, height: canvasH } = getCanvasDimensionsForProject(
         currentProject,
-        get().sources
+        state.sources
       );
       const baseBounds =
         activeClip.overlayBounds ||
@@ -1525,14 +1825,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       return;
     }
 
-    const source = activeClip ? get().sources.find((s) => s.id === activeClip.sourceId) : get().sources[0];
+    const targetClip = resolveTargetMainClip(currentProject.clips, activeId);
+    const source = targetClip
+      ? state.sources.find((s) => s.id === targetClip.sourceId)
+      : state.sources[0];
     const srcW = source?.probe.video?.width || 1920;
     const srcH = source?.probe.video?.height || 1080;
     const targetRatio = resolveAspectRatio(currentProject.aspect, srcW, srcH);
     const srcRatio = srcW / srcH;
 
     if (currentProject.fitMode === 'fit') {
-      let baseBounds = currentProject.fitBounds;
+      let baseBounds = targetClip?.fitBounds ?? currentProject.fitBounds;
       if (!baseBounds) {
         if (srcRatio > targetRatio) {
           const h = targetRatio / srcRatio;
@@ -1548,33 +1851,30 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       else if (pos === 'right') x = 1 - baseBounds.width;
       if (pos === 'top') y = 0;
       else if (pos === 'bottom') y = 1 - baseBounds.height;
-      set((s) => ({
-        project: {
-          ...s.project,
-          fitBounds: { ...baseBounds!, x, y },
-        },
-      }));
+      if (targetClip) {
+        useHistoryStore.getState().recordChange(currentProject.clips, 'Adjust clip position');
+      }
+      get().setFitBounds({ ...baseBounds, x, y }, targetClip?.id);
       return;
     }
 
     if (currentProject.fitMode === 'stretch') {
-      const baseBounds = currentProject.stretchBounds || { x: 0, y: 0, width: 1, height: 1 };
+      const baseBounds =
+        targetClip?.stretchBounds ?? currentProject.stretchBounds ?? { x: 0, y: 0, width: 1, height: 1 };
       let x = (1 - baseBounds.width) / 2;
       let y = (1 - baseBounds.height) / 2;
       if (pos === 'left') x = 0;
       else if (pos === 'right') x = 1 - baseBounds.width;
       if (pos === 'top') y = 0;
       else if (pos === 'bottom') y = 1 - baseBounds.height;
-      set((s) => ({
-        project: {
-          ...s.project,
-          stretchBounds: { ...baseBounds, x, y },
-        },
-      }));
+      if (targetClip) {
+        useHistoryStore.getState().recordChange(currentProject.clips, 'Adjust clip position');
+      }
+      get().setStretchBounds({ ...baseBounds, x, y }, targetClip?.id);
       return;
     }
 
-    const currentCrop = currentProject.crop;
+    const currentCrop = targetClip?.cropOverride ?? currentProject.crop;
     const hasCustomCrop =
       currentCrop &&
       currentCrop.width > 0 &&
@@ -1588,12 +1888,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       else if (pos === 'right') x = 1 - currentCrop.width;
       if (pos === 'top') y = 0;
       else if (pos === 'bottom') y = 1 - currentCrop.height;
-      set((s) => ({
-        project: {
-          ...s.project,
-          crop: { ...currentCrop, x, y },
-        },
-      }));
+      if (targetClip) {
+        useHistoryStore.getState().recordChange(currentProject.clips, 'Adjust crop position');
+      }
+      get().setCrop({ ...currentCrop, x, y }, targetClip?.id);
       return;
     }
 
@@ -1611,7 +1909,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       else if (pos === 'bottom') y = 1 - heightRatio;
       crop = { x: 0, y, width: 1, height: heightRatio };
     }
-    set((s) => ({ project: { ...s.project, crop } }));
+    if (targetClip) {
+      useHistoryStore.getState().recordChange(currentProject.clips, 'Adjust crop position');
+    }
+    get().setCrop(crop, targetClip?.id);
   },
 
   setOutput: (output) => set((s) => ({ project: { ...s.project, output: { ...s.project.output, ...output } } })),
@@ -1661,29 +1962,224 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   setClipSharpness: (clipId: string, sharpness: number, recordHistory = true) => {
-    const clamped = Math.max(0, Math.min(1, Number.isFinite(sharpness) ? Math.round(sharpness * 100) / 100 : 0));
+    const clampedPct = clampVideoAdjustment('sharpness', (Number.isFinite(sharpness) ? sharpness : 0) * 100);
+    get().setClipVideoAdjustment(clipId, 'sharpness', clampedPct, recordHistory);
+  },
+
+  applySharpnessToAll: () => {
+    get().applyVideoAdjustmentsToAll();
+  },
+
+  setClipVideoAdjustment: (
+    clipId: string,
+    key: VideoAdjustmentKey,
+    value: number,
+    recordHistory = true
+  ) => {
+    const clamped = clampVideoAdjustment(key, value);
     const currentClips = get().project.clips;
     const target = currentClips.find((c) => c.id === clipId);
     if (!target) return;
-    if (Math.abs((target.sharpness ?? 0) - clamped) < 0.001) return;
+
+    const prevAdj = resolveClipVideoAdjustments(target);
+    if (Math.abs(prevAdj[key] - clamped) < 0.01) return;
 
     if (recordHistory) {
-      useHistoryStore.getState().recordChange(currentClips, 'Adjust clip sharpness');
+      useHistoryStore.getState().recordChange(currentClips, `Adjust clip ${key}`);
     }
+
+    const nextAdj: VideoAdjustments = { ...prevAdj, [key]: clamped };
+    const storedAdj = hasActiveVideoAdjustments(nextAdj) ? nextAdj : undefined;
+    const syncedSharpness = nextAdj.sharpness / 100;
+
     const clips = currentClips.map((c) =>
-      c.id === clipId ? { ...c, sharpness: clamped } : c
+      c.id === clipId
+        ? { ...c, sharpness: syncedSharpness, videoAdjustments: storedAdj }
+        : c
     );
     set((s) => ({ project: { ...s.project, clips } }));
   },
 
-  applySharpnessToAll: () => {
+  setClipVideoAdjustments: (
+    clipId: string,
+    patch: Partial<VideoAdjustments>,
+    description = 'Apply video adjustments',
+    recordHistory = true
+  ) => {
+    const currentClips = get().project.clips;
+    const target = currentClips.find((c) => c.id === clipId);
+    if (!target) return;
+
+    const prevAdj = resolveClipVideoAdjustments(target);
+    const nextAdj: VideoAdjustments = { ...prevAdj };
+    for (const spec of VIDEO_PARAM_SPECS) {
+      const k = spec.key;
+      if (k in patch && typeof patch[k] === 'number') {
+        nextAdj[k] = clampVideoAdjustment(k, patch[k] as number);
+      }
+    }
+
+    const changed = VIDEO_PARAM_SPECS.some(
+      (spec) => Math.abs(nextAdj[spec.key] - prevAdj[spec.key]) >= 0.01
+    );
+    if (!changed) return;
+
+    if (recordHistory) {
+      useHistoryStore.getState().recordChange(currentClips, description);
+    }
+
+    const storedAdj = hasActiveVideoAdjustments(nextAdj) ? nextAdj : undefined;
+    const syncedSharpness = nextAdj.sharpness / 100;
+
+    const clips = currentClips.map((c) =>
+      c.id === clipId
+        ? { ...c, sharpness: syncedSharpness, videoAdjustments: storedAdj }
+        : c
+    );
+    set((s) => ({ project: { ...s.project, clips } }));
+  },
+
+  resetClipVideoAdjustments: (
+    clipId: string,
+    category?: Exclude<VideoFxCategory, 'all'>
+  ) => {
+    const currentClips = get().project.clips;
+    const target = currentClips.find((c) => c.id === clipId);
+    if (!target) return;
+
+    const prevAdj = resolveClipVideoAdjustments(target);
+    const nextAdj: VideoAdjustments = { ...prevAdj };
+    let changed = false;
+
+    for (const spec of VIDEO_PARAM_SPECS) {
+      if (category && spec.category !== category) continue;
+      if (Math.abs(nextAdj[spec.key] - DEFAULT_VIDEO_ADJUSTMENTS[spec.key]) >= 0.01) {
+        nextAdj[spec.key] = DEFAULT_VIDEO_ADJUSTMENTS[spec.key];
+        changed = true;
+      }
+    }
+    if (!changed) return;
+
+    useHistoryStore.getState().recordChange(
+      currentClips,
+      category ? `Reset ${category} adjustments` : 'Reset all video adjustments'
+    );
+
+    const storedAdj = hasActiveVideoAdjustments(nextAdj) ? nextAdj : undefined;
+    const syncedSharpness = nextAdj.sharpness / 100;
+
+    const clips = currentClips.map((c) =>
+      c.id === clipId
+        ? { ...c, sharpness: syncedSharpness, videoAdjustments: storedAdj }
+        : c
+    );
+    set((s) => ({ project: { ...s.project, clips } }));
+  },
+
+  applyVideoAdjustmentsToAll: () => {
     const { project, activeClipId } = get();
     const sourceClip = project.clips.find((c) => c.id === activeClipId) || project.clips[0];
     if (!sourceClip || project.clips.length <= 1) return;
 
-    const targetSharpness = sourceClip.sharpness ?? 0;
-    useHistoryStore.getState().recordChange(project.clips, 'Apply sharpness to all clips');
-    const clips = project.clips.map((c) => ({ ...c, sharpness: targetSharpness }));
+    const targetAdj = resolveClipVideoAdjustments(sourceClip);
+    const storedAdj = hasActiveVideoAdjustments(targetAdj) ? targetAdj : undefined;
+    const syncedSharpness = targetAdj.sharpness / 100;
+
+    useHistoryStore.getState().recordChange(project.clips, 'Apply video adjustments to all clips');
+    const clips = project.clips.map((c) => ({
+      ...c,
+      sharpness: syncedSharpness,
+      videoAdjustments: storedAdj ? { ...storedAdj } : undefined,
+    }));
+    set((s) => ({ project: { ...s.project, clips } }));
+  },
+
+  setClipTransitionIn: (clipId: string, transition: ClipTransition | null, recordHistory = true) => {
+    const currentClips = get().project.clips;
+    const target = currentClips.find((c) => c.id === clipId);
+    if (!target) return;
+    if (recordHistory) {
+      useHistoryStore.getState().recordChange(currentClips, 'Adjust clip transition in');
+    }
+    const normalized = isActiveTransition(transition) ? { ...transition } : undefined;
+    const clips = currentClips.map((c) =>
+      c.id === clipId ? { ...c, transitionIn: normalized } : c
+    );
+    set((s) => ({ project: { ...s.project, clips } }));
+    try {
+      const total = getTimelineTotalDurationMs(clips);
+      const player = usePlayerStore.getState();
+      if (total > 0 && player.currentTimeMs > total) {
+        player.seek(total);
+      }
+    } catch {
+      // ignore if player not ready
+    }
+  },
+
+  setClipTransitionOut: (clipId: string, transition: ClipTransition | null, recordHistory = true) => {
+    const currentClips = get().project.clips;
+    const target = currentClips.find((c) => c.id === clipId);
+    if (!target) return;
+    if (recordHistory) {
+      useHistoryStore.getState().recordChange(currentClips, 'Adjust clip transition out');
+    }
+    const normalized = isActiveTransition(transition) ? { ...transition } : undefined;
+    const clips = currentClips.map((c) =>
+      c.id === clipId ? { ...c, transitionOut: normalized } : c
+    );
+    set((s) => ({ project: { ...s.project, clips } }));
+  },
+
+  applyTransitionToAllCuts: (transition: ClipTransition) => {
+    const currentClips = get().project.clips;
+    const timing = computeMainTrackTiming(currentClips);
+    if (timing.items.length === 0) return;
+
+    useHistoryStore.getState().recordChange(currentClips, 'Apply transition to all cuts');
+    const junctionClipIds = new Set(
+      timing.items.filter((it) => it.index > 0 && it.isContiguousWithPrev).map((it) => it.clip.id)
+    );
+    const normalized = isActiveTransition(transition) ? { ...transition } : undefined;
+
+    const clips = currentClips.map((c) => {
+      if (timing.items.length === 1 && c.id === timing.items[0].clip.id) {
+        return {
+          ...c,
+          transitionIn: normalized ? { ...normalized } : undefined,
+          transitionOut: normalized ? { ...normalized } : undefined,
+        };
+      }
+      if (junctionClipIds.has(c.id)) {
+        return {
+          ...c,
+          transitionIn: normalized ? { ...normalized } : undefined,
+        };
+      }
+      return c;
+    });
+
+    set((s) => ({ project: { ...s.project, clips } }));
+    try {
+      const total = getTimelineTotalDurationMs(clips);
+      const player = usePlayerStore.getState();
+      if (total > 0 && player.currentTimeMs > total) {
+        player.seek(total);
+      }
+    } catch {
+      // ignore
+    }
+  },
+
+  clearAllTransitions: () => {
+    const currentClips = get().project.clips;
+    if (!currentClips.some((c) => c.transitionIn || c.transitionOut)) return;
+    useHistoryStore.getState().recordChange(currentClips, 'Clear all transitions');
+    const clips = currentClips.map((c) => ({
+      ...c,
+      transitionIn: undefined,
+      transitionOut: undefined,
+    }));
     set((s) => ({ project: { ...s.project, clips } }));
   },
 

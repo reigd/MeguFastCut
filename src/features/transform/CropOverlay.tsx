@@ -5,7 +5,7 @@ import { usePlayerStore } from '../../stores/player';
 import { AutoAlignIcon, CheckIcon, CropIcon } from '../../components/icons';
 import { t } from '../../shared/i18n';
 import { makeEven } from '../../shared/geometry';
-import { CropRect } from '../../shared/types';
+import { Clip, CropRect } from '../../shared/types';
 
 export interface NormalizedBounds {
   x: number;
@@ -22,6 +22,7 @@ interface CropOverlayProps {
   normalizedBounds?: NormalizedBounds;
   sourceWidth?: number;
   sourceHeight?: number;
+  clipId?: string;
   isOverlayMode?: boolean;
   onResizeChange?: (isResizing: boolean) => void;
   onBoundsChange?: (bounds: NormalizedBounds) => void;
@@ -80,17 +81,22 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
   normalizedBounds,
   sourceWidth,
   sourceHeight,
+  clipId,
   isOverlayMode = false,
   onResizeChange,
   onBoundsChange,
 }) => {
-  const { project, setCrop } = useProjectStore();
+  const { project, activeClipId, setCrop } = useProjectStore();
   const { autoAlignEnabled, toggleAutoAlign } = usePlayerStore();
   const isCropEditing = usePlayerStore((s) => s.isCropEditing);
-  const crop = project.crop;
+  const targetClip = clipId
+    ? project.clips.find((c) => c.id === clipId)
+    : project.clips.find((c) => c.id === activeClipId);
+  const crop = !isOverlayMode && targetClip?.cropOverride ? targetClip.cropOverride : project.crop;
   const isCropMode = !isOverlayMode && project.fitMode === 'crop';
 
   const sessionRef = useRef<DragSession | null>(null);
+  const initialClipsRef = useRef<Clip[]>(project.clips);
   const [activeHandle, setActiveHandle] = useState<HandleType | null>(null);
   const [hoveredHandle, setHoveredHandle] = useState<HandleType | null>(null);
   const [isApplied, setIsApplied] = useState(false);
@@ -106,13 +112,13 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
   const srcW = sourceWidth || 1920;
   const srcH = sourceHeight || 1080;
 
-  const initialCropRef = useRef<CropRect>(project.crop);
+  const initialCropRef = useRef<CropRect>(crop);
 
   React.useEffect(() => {
     if (isCropMode) {
-      initialCropRef.current = { ...project.crop };
+      initialCropRef.current = { ...crop };
     }
-  }, [isCropMode]);
+  }, [isCropMode, clipId]);
 
   const handleApplyCrop = (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -126,7 +132,7 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
 
   const handleCancelCrop = (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    setCrop(initialCropRef.current);
+    setCrop(initialCropRef.current, clipId);
     usePlayerStore.getState().setCropEditing(false);
   };
 
@@ -143,14 +149,15 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isCropMode, project.crop, srcW, srcH]);
+  }, [isCropMode, crop, srcW, srcH, clipId]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>, handle: HandleType) => {
     e.stopPropagation();
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
 
-    const currentCrop = project.crop;
+    const currentCrop = crop;
+    initialClipsRef.current = JSON.parse(JSON.stringify(project.clips)) as Clip[];
     const cW = canvasWidth || width;
     const cH = canvasHeight || height;
     const norm = normalizedBounds || {
@@ -394,12 +401,15 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
 
       newX = Math.max(0, Math.min(1 - session.startCropW, proposedX));
       newY = Math.max(0, Math.min(1 - session.startCropH, proposedY));
-      setCrop({
-        x: newX,
-        y: newY,
-        width: session.startCropW,
-        height: session.startCropH,
-      });
+      setCrop(
+        {
+          x: newX,
+          y: newY,
+          width: session.startCropW,
+          height: session.startCropH,
+        },
+        clipId
+      );
       return;
     }
 
@@ -555,12 +565,15 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
     const pixelW = makeEven(Math.round(newW * session.srcW));
     const pixelH = makeEven(Math.round(newH * session.srcH));
 
-    setCrop({
-      x: newX,
-      y: newY,
-      width: newW,
-      height: newH,
-    });
+    setCrop(
+      {
+        x: newX,
+        y: newY,
+        width: newW,
+        height: newH,
+      },
+      clipId
+    );
 
     setHudInfo({
       visible: true,
@@ -587,8 +600,10 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
       } catch {
         // ignore
       }
-      if (wasResize) {
-        useHistoryStore.getState().recordChange(project.clips, isCropMode ? 'Crop adjusted' : 'Transform adjusted');
+      if (wasResize || dist >= 5) {
+        useHistoryStore
+          .getState()
+          .recordChange(initialClipsRef.current, isCropMode ? 'Crop adjusted' : 'Transform adjusted');
       } else if (!isCropMode && dist < 5) {
         usePlayerStore.getState().togglePlay();
       }
@@ -620,7 +635,7 @@ export const CropOverlay: React.FC<CropOverlayProps> = ({
         const clickY = (e.clientY - rect.top) / rect.height;
         const newX = Math.max(0, Math.min(1 - crop.width, clickX - crop.width / 2));
         const newY = Math.max(0, Math.min(1 - crop.height, clickY - crop.height / 2));
-        setCrop({ ...crop, x: newX, y: newY });
+        setCrop({ ...crop, x: newX, y: newY }, clipId);
       }}
       style={{
         position: 'absolute',

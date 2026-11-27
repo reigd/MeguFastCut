@@ -568,3 +568,130 @@ export const SlidersIcon: React.FC<IconProps> = (p) => (
   </BaseIcon>
 );
 
+export const TransitionIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <polygon points="3 5 11 12 3 19 3 5" />
+    <polygon points="21 5 13 12 21 19 21 5" />
+  </BaseIcon>
+);
+
+export const ArrowLeftIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <line x1="19" y1="12" x2="5" y2="12" />
+    <polyline points="12 19 5 12 12 5" />
+  </BaseIcon>
+);
+
+export const ArrowRightIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <line x1="5" y1="12" x2="19" y2="12" />
+    <polyline points="12 5 19 12 12 19" />
+  </BaseIcon>
+);
+
+export const ArrowUpIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <line x1="12" y1="19" x2="12" y2="5" />
+    <polyline points="5 12 12 5 19 12" />
+  </BaseIcon>
+);
+
+export const ArrowDownIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <polyline points="19 12 12 19 5 12" />
+  </BaseIcon>
+);
+
+export const ArrowUpLeftIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <line x1="17" y1="17" x2="7" y2="7" />
+    <polyline points="7 17 7 7 17 7" />
+  </BaseIcon>
+);
+
+export const ArrowUpRightIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <line x1="7" y1="17" x2="17" y2="7" />
+    <polyline points="7 7 17 7 17 17" />
+  </BaseIcon>
+);
+
+export const ArrowDownLeftIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <line x1="17" y1="7" x2="7" y2="17" />
+    <polyline points="17 17 7 17 7 7" />
+  </BaseIcon>
+);
+
+export const ArrowDownRightIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <line x1="7" y1="7" x2="17" y2="17" />
+    <polyline points="17 7 17 17 7 17" />
+  </BaseIcon>
+);
+
+export const CircleIrisIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <circle cx="12" cy="12" r="4" />
+  </BaseIcon>
+);
+
+export const SplitShutterIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <line x1="12" y1="4" x2="12" y2="20" />
+    <polyline points="8 9 5 12 8 15" />
+    <polyline points="16 9 19 12 16 15" />
+  </BaseIcon>
+);
+
+export const SunIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <circle cx="12" cy="12" r="4" />
+    <line x1="12" y1="2" x2="12" y2="4.5" />
+    <line x1="12" y1="19.5" x2="12" y2="22" />
+    <line x1="4.93" y1="4.93" x2="6.7" y2="6.7" />
+    <line x1="17.3" y1="17.3" x2="19.07" y2="19.07" />
+    <line x1="2" y1="12" x2="4.5" y2="12" />
+    <line x1="19.5" y1="12" x2="22" y2="12" />
+    <line x1="4.93" y1="19.07" x2="6.7" y2="17.3" />
+    <line x1="17.3" y1="6.7" x2="19.07" y2="4.93" />
+  </BaseIcon>
+);
+
+export const DropletIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z" />
+  </BaseIcon>
+);
+
+export const ApertureIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <circle cx="12" cy="12" r="9.5" />
+    <line x1="14.31" y1="8" x2="20.05" y2="17.94" />
+    <line x1="9.69" y1="8" x2="21.17" y2="8" />
+    <line x1="7.38" y1="12" x2="13.12" y2="2.06" />
+    <line x1="9.69" y1="16" x2="3.95" y2="6.06" />
+    <line x1="14.31" y1="16" x2="2.83" y2="16" />
+    <line x1="16.62" y1="12" x2="10.88" y2="21.94" />
+  </BaseIcon>
+);
+
+export const CompareSplitIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <line x1="12" y1="2" x2="12" y2="22" />
+    <path d="M6 9h3" />
+    <path d="M15 15h3" />
+  </BaseIcon>
+);
+
+export const EditPencilIcon: React.FC<IconProps> = (p) => (
+  <BaseIcon {...p}>
+    <path d="M12 20h9" />
+    <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+  </BaseIcon>
+);
+

@@ -274,6 +274,8 @@ export const SettingsModal: React.FC = () => {
             {[
               { key: 'Space', desc: 'Play / Pause' },
               { key: 'S', desc: 'Split clip at playhead' },
+              { key: 'Ctrl+C', desc: 'Copy selected clip' },
+              { key: 'Ctrl+V', desc: 'Paste clip before copied clip' },
               { key: 'Delete / Backspace', desc: 'Delete selected clip' },
               { key: 'Ctrl+Shift+S', desc: 'Replace current video' },
               { key: 'Ctrl+E', desc: 'Export video' },

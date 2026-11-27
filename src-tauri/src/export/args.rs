@@ -1,4 +1,7 @@
-use super::{ExportAspect, ExportClip, ExportCrop, ExportJob, ExportSource};
+use super::{
+    ExportAspect, ExportClip, ExportCrop, ExportJob, ExportSource, ExportTransition,
+    ExportVideoAdjustments,
+};
 
 pub fn make_even(n: f64) -> u32 {
     let rounded = n.round() as u32;
@@ -40,11 +43,430 @@ pub fn resolve_aspect_ratio(aspect: &ExportAspect, src_w: f64, src_h: f64) -> f6
     }
 }
 
-fn resolve_target_fps(job: &ExportJob) -> u32 {
+fn resolve_target_fps_for_job(job: &ExportJob, primary_src: &ExportSource) -> u32 {
     match job.output.fps_mode.as_str() {
         "60" => 60,
         "24" => 24,
-        _ => 30,
+        _ => {
+            if let (Some(num), Some(den)) = (primary_src.fps_num, primary_src.fps_den) {
+                if num > 0 && den > 0 {
+                    let fps = (num as f64 / den as f64).round() as u32;
+                    if (15..=120).contains(&fps) {
+                        return fps;
+                    }
+                }
+            }
+            30
+        }
+    }
+}
+
+fn is_active_transition(tr: Option<&ExportTransition>) -> bool {
+    matches!(tr, Some(t) if t.kind != "none" && t.duration_ms >= 50)
+}
+
+fn has_any_transition(clips: &[&ExportClip]) -> bool {
+    clips
+        .iter()
+        .any(|c| is_active_transition(c.transition_in.as_ref()) || is_active_transition(c.transition_out.as_ref()))
+}
+
+fn clean_hex_color(color: Option<&str>, fallback: &str) -> String {
+    let raw = color.unwrap_or(fallback).trim();
+    if let Some(hex) = raw.strip_prefix('#') {
+        if (hex.len() == 6 || hex.len() == 3) && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return format!("0x{}", hex);
+        }
+    }
+    fallback.to_string()
+}
+
+#[derive(Debug, Clone)]
+struct MainClipTiming {
+    dur_ms: u64,
+    gap_before_ms: u64,
+    is_contiguous_with_prev: bool,
+    overlap_in_ms: u64,
+    intro_dur_ms: u64,
+    outro_dur_ms: u64,
+    play_end_ms: u64,
+}
+
+fn compute_main_track_timing(resolved_main: &[(&ExportClip, &ExportSource)]) -> (Vec<MainClipTiming>, u64) {
+    if resolved_main.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let mut items: Vec<MainClipTiming> = Vec::with_capacity(resolved_main.len());
+    let mut raw_cursor: u64 = 0;
+
+    for (i, (clip, _)) in resolved_main.iter().enumerate() {
+        let dur = effective_clip_duration_ms(clip);
+        let raw_start = clip.start_ms.unwrap_or(raw_cursor);
+        let gap_before = if i == 0 {
+            raw_start
+        } else {
+            raw_start.saturating_sub(raw_cursor)
+        };
+        raw_cursor = raw_cursor.max(raw_start + dur);
+
+        let is_contiguous = i > 0 && gap_before <= 5;
+        let mut overlap_in_ms = 0u64;
+        let mut intro_dur_ms = 0u64;
+
+        if is_contiguous && is_active_transition(clip.transition_in.as_ref()) {
+            let prev = &items[i - 1];
+            let prev_used = if prev.overlap_in_ms > 0 {
+                prev.overlap_in_ms
+            } else {
+                prev.intro_dur_ms
+            };
+            let max_prev = ((prev.dur_ms as f64 * 0.8).floor() as u64)
+                .min(prev.dur_ms.saturating_sub(prev_used + 60));
+            let max_curr = ((dur as f64 * 0.8).floor() as u64).min(dur.saturating_sub(60));
+            let max_allowed = max_prev.min(max_curr);
+            let tr_ms = clip.transition_in.as_ref().map(|t| t.duration_ms).unwrap_or(0);
+            let clamped = tr_ms.min(max_allowed);
+            if clamped >= 50 {
+                overlap_in_ms = clamped;
+            }
+        } else if !is_contiguous && is_active_transition(clip.transition_in.as_ref()) {
+            let max_allowed = dur.saturating_sub(60);
+            let tr_ms = clip.transition_in.as_ref().map(|t| t.duration_ms).unwrap_or(0);
+            let clamped = tr_ms.min(max_allowed);
+            if clamped >= 50 {
+                intro_dur_ms = clamped;
+            }
+        }
+
+        let prev_play_end = if i == 0 { 0 } else { items[i - 1].play_end_ms };
+        let play_start = if i == 0 {
+            gap_before
+        } else if is_contiguous {
+            prev_play_end.saturating_sub(overlap_in_ms)
+        } else {
+            prev_play_end + gap_before
+        };
+
+        items.push(MainClipTiming {
+            dur_ms: dur,
+            gap_before_ms: gap_before,
+            is_contiguous_with_prev: is_contiguous,
+            overlap_in_ms,
+            intro_dur_ms,
+            outro_dur_ms: 0,
+            play_end_ms: play_start + dur,
+        });
+    }
+
+    let len = items.len();
+    for i in 0..len {
+        let is_end_of_run = i + 1 >= len || !items[i + 1].is_contiguous_with_prev;
+        if is_end_of_run && is_active_transition(resolved_main[i].0.transition_out.as_ref()) {
+            let used_start = if items[i].overlap_in_ms > 0 {
+                items[i].overlap_in_ms
+            } else {
+                items[i].intro_dur_ms
+            };
+            let max_allowed = items[i].dur_ms.saturating_sub(used_start + 60);
+            let tr_ms = resolved_main[i]
+                .0
+                .transition_out
+                .as_ref()
+                .map(|t| t.duration_ms)
+                .unwrap_or(0);
+            let clamped = tr_ms.min(max_allowed);
+            if clamped >= 50 {
+                items[i].outro_dur_ms = clamped;
+            }
+        }
+    }
+
+    let total_main_ms = items.last().map(|it| it.play_end_ms).unwrap_or(0);
+    (items, total_main_ms)
+}
+
+fn easing_expr(easing: Option<&str>) -> &'static str {
+    match easing.unwrap_or("smooth") {
+        "linear" => "P",
+        "easeIn" => "P*P",
+        "easeOut" => "(1-(1-P)*(1-P))",
+        "sharp" => "if(lt(P,0.5),4*P*P*P,1-pow(-2*P+2,3)/2)",
+        _ => "P*P*(3-2*P)",
+    }
+}
+
+fn is_custom_dip_color(tr: &ExportTransition) -> Option<String> {
+    match tr.kind.as_str() {
+        "dipcolor" => Some(clean_hex_color(tr.color.as_deref(), "0x0F172A")),
+        "fadeblack" => {
+            let c = clean_hex_color(tr.color.as_deref(), "0x000000");
+            if c.eq_ignore_ascii_case("0x000000") || c.eq_ignore_ascii_case("0x000") {
+                None
+            } else {
+                Some(c)
+            }
+        }
+        "fadewhite" => {
+            let c = clean_hex_color(tr.color.as_deref(), "0xFFFFFF");
+            if c.eq_ignore_ascii_case("0xFFFFFF") || c.eq_ignore_ascii_case("0xFFF") {
+                None
+            } else {
+                Some(c)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn build_xfade_filter_spec(tr: &ExportTransition, dur_sec: f64, offset_sec: f64) -> String {
+    let easing = tr.easing.as_deref().unwrap_or("smooth");
+    let softness = tr.softness.unwrap_or(0.0).clamp(0.0, 1.0);
+    let e = easing_expr(Some(easing));
+    let f = (softness * 0.35).max(0.002);
+
+    let custom_expr: Option<String> = match tr.kind.as_str() {
+        "fade" if easing != "linear" => Some(format!("st(0,{});A*(1-ld(0))+B*ld(0)", e)),
+        "wipe" if easing != "linear" || softness > 0.01 => {
+            let coord = match tr.direction.as_deref().unwrap_or("left") {
+                "right" => "X/W",
+                "up" => "(1-Y/H)",
+                "down" => "Y/H",
+                _ => "(1-X/W)",
+            };
+            Some(format!(
+                "st(0,{});st(1,clip((ld(0)*(1+{:.4})-{})/{:.4},0,1));A*(1-ld(1))+B*ld(1)",
+                e, f, coord, f
+            ))
+        }
+        "diagwipe" if easing != "linear" || softness > 0.01 => {
+            let coord = match tr.direction.as_deref().unwrap_or("tl") {
+                "tr" => "((1-X/W+Y/H)/2)",
+                "bl" => "((X/W+1-Y/H)/2)",
+                "br" => "((2-X/W-Y/H)/2)",
+                _ => "((X/W+Y/H)/2)",
+            };
+            Some(format!(
+                "st(0,{});st(1,clip((ld(0)*(1+{:.4})-{})/{:.4},0,1));A*(1-ld(1))+B*ld(1)",
+                e, f, coord, f
+            ))
+        }
+        "circle" if easing != "linear" || softness > 0.01 => {
+            let dir = tr.direction.as_deref().unwrap_or("open");
+            if dir == "close" {
+                Some(format!(
+                    "st(0,{});st(1,clip(((1-ld(0))*(1+{:.4})-hypot(X-W/2,Y-H/2)/hypot(W/2,H/2))/{:.4},0,1));B*(1-ld(1))+A*ld(1)",
+                    e, f, f
+                ))
+            } else {
+                Some(format!(
+                    "st(0,{});st(1,clip((ld(0)*(1+{:.4})-hypot(X-W/2,Y-H/2)/hypot(W/2,H/2))/{:.4},0,1));A*(1-ld(1))+B*ld(1)",
+                    e, f, f
+                ))
+            }
+        }
+        "shutter" if easing != "linear" || softness > 0.01 => {
+            let dir = tr.direction.as_deref().unwrap_or("horzopen");
+            let is_vert = dir == "vertopen" || dir == "vertclose";
+            let is_close = dir == "horzclose" || dir == "vertclose";
+            let coord = if is_vert { "abs(Y/H-0.5)*2" } else { "abs(X/W-0.5)*2" };
+            if is_close {
+                Some(format!(
+                    "st(0,{});st(1,clip(((1-ld(0))*(1+{:.4})-{})/{:.4},0,1));B*(1-ld(1))+A*ld(1)",
+                    e, f, coord, f
+                ))
+            } else {
+                Some(format!(
+                    "st(0,{});st(1,clip((ld(0)*(1+{:.4})-{})/{:.4},0,1));A*(1-ld(1))+B*ld(1)",
+                    e, f, coord, f
+                ))
+            }
+        }
+        _ => None,
+    };
+
+    if let Some(expr) = custom_expr {
+        return format!(
+            "xfade=transition=custom:duration={:.3}:offset={:.3}:expr='{}'",
+            dur_sec, offset_sec, expr
+        );
+    }
+
+    let builtin = match tr.kind.as_str() {
+        "fadeblack" => "fadeblack",
+        "fadewhite" => "fadewhite",
+        "dipcolor" => "fadeblack",
+        "hblur" => "hblur",
+        "fadegrays" => "fadegrays",
+        "dissolve" => "dissolve",
+        "zoomin" => "zoomin",
+        "pixelize" => "pixelize",
+        "smooth" => match tr.direction.as_deref().unwrap_or("left") {
+            "right" => "smoothright",
+            "up" => "smoothup",
+            "down" => "smoothdown",
+            _ => "smoothleft",
+        },
+        "slide" => match tr.direction.as_deref().unwrap_or("left") {
+            "right" => "slideright",
+            "up" => "slideup",
+            "down" => "slidedown",
+            _ => "slideleft",
+        },
+        "cover" => match tr.direction.as_deref().unwrap_or("left") {
+            "right" => "coverright",
+            "up" => "coverup",
+            "down" => "coverdown",
+            _ => "coverleft",
+        },
+        "reveal" => match tr.direction.as_deref().unwrap_or("left") {
+            "right" => "revealright",
+            "up" => "revealup",
+            "down" => "revealdown",
+            _ => "revealleft",
+        },
+        "wipe" => match tr.direction.as_deref().unwrap_or("left") {
+            "right" => "wiperight",
+            "up" => "wipeup",
+            "down" => "wipedown",
+            _ => "wipeleft",
+        },
+        "diagwipe" => match tr.direction.as_deref().unwrap_or("tl") {
+            "tr" => "diagtr",
+            "bl" => "diagbl",
+            "br" => "diagbr",
+            _ => "diagtl",
+        },
+        "circle" => match tr.direction.as_deref().unwrap_or("open") {
+            "close" => "circleclose",
+            _ => "circleopen",
+        },
+        "shutter" => match tr.direction.as_deref().unwrap_or("horzopen") {
+            "horzclose" => "horzclose",
+            "vertopen" => "vertopen",
+            "vertclose" => "vertclose",
+            _ => "horzopen",
+        },
+        "squeeze" => match tr.direction.as_deref().unwrap_or("horizontal") {
+            "vertical" => "squeezev",
+            _ => "squeezeh",
+        },
+        "slice" => match tr.direction.as_deref().unwrap_or("left") {
+            "right" => "hrslice",
+            "up" => "vuslice",
+            "down" => "vdslice",
+            _ => "hlslice",
+        },
+        _ => "fade",
+    };
+
+    format!(
+        "xfade=transition={}:duration={:.3}:offset={:.3}",
+        builtin, dur_sec, offset_sec
+    )
+}
+
+struct TransitionStageCtx<'a> {
+    tr: &'a ExportTransition,
+    acc_dur_ms: u64,
+    overlap_ms: u64,
+    canvas_w: u32,
+    canvas_h: u32,
+    target_fps: u32,
+    stage_id: usize,
+}
+
+fn append_video_transition_stage(
+    fc: &mut String,
+    prev_label: &str,
+    curr_label: &str,
+    out_label: &str,
+    ctx: &TransitionStageCtx<'_>,
+) {
+    let dur_sec = ctx.overlap_ms as f64 / 1000.0;
+    let offset_sec = ctx.acc_dur_ms.saturating_sub(ctx.overlap_ms) as f64 / 1000.0;
+
+    if let Some(hex) = is_custom_dip_color(ctx.tr) {
+        let half_sec = (ctx.overlap_ms as f64 / 2000.0).max(0.02);
+        let mid_offset_sec = offset_sec + half_sec;
+        let dip_pad = format!("dip_pad_{}", ctx.stage_id);
+        let dip_mid = format!("dip_mid_{}", ctx.stage_id);
+        let curr_trimmed = format!("{}_dt", curr_label);
+        fc.push_str(&format!(
+            "color=c={}:s={}x{}:r={}:d={:.3},format=yuv420p[{}];",
+            hex, ctx.canvas_w, ctx.canvas_h, ctx.target_fps, dur_sec, dip_pad
+        ));
+        fc.push_str(&format!(
+            "[{}]trim=start={:.3},setpts=PTS-STARTPTS[{}];",
+            curr_label, half_sec, curr_trimmed
+        ));
+        fc.push_str(&format!(
+            "[{}][{}]xfade=transition=fade:duration={:.3}:offset={:.3}[{}];",
+            prev_label, dip_pad, half_sec, offset_sec, dip_mid
+        ));
+        fc.push_str(&format!(
+            "[{}][{}]xfade=transition=fade:duration={:.3}:offset={:.3}[{}];",
+            dip_mid, curr_trimmed, half_sec, mid_offset_sec, out_label
+        ));
+        return;
+    }
+
+    let spec = build_xfade_filter_spec(ctx.tr, dur_sec, offset_sec);
+    fc.push_str(&format!(
+        "[{}][{}]{}[{}];",
+        prev_label, curr_label, spec, out_label
+    ));
+}
+
+fn append_audio_transition_stage(
+    fc: &mut String,
+    prev_label: &str,
+    curr_label: &str,
+    out_label: &str,
+    ctx: &TransitionStageCtx<'_>,
+) {
+    let dur_sec = ctx.overlap_ms as f64 / 1000.0;
+    let mode = ctx.tr.audio_mode.as_deref().unwrap_or("crossfade");
+    if mode == "cut" {
+        let half_sec = ctx.overlap_ms as f64 / 2000.0;
+        let prev_cut_sec = (ctx.acc_dur_ms.saturating_sub(ctx.overlap_ms / 2)) as f64 / 1000.0;
+        let fade_out_st = (prev_cut_sec - 0.008).max(0.0);
+        let p_lbl = format!("acut_p_{}", ctx.stage_id);
+        let c_lbl = format!("acut_c_{}", ctx.stage_id);
+        fc.push_str(&format!(
+            "[{}]atrim=duration={:.3},asetpts=PTS-STARTPTS,afade=t=out:st={:.3}:d=0.008[{}];",
+            prev_label, prev_cut_sec, fade_out_st, p_lbl
+        ));
+        fc.push_str(&format!(
+            "[{}]atrim=start={:.3},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.008[{}];",
+            curr_label, half_sec, c_lbl
+        ));
+        fc.push_str(&format!(
+            "[{}][{}]concat=n=2:v=0:a=1[{}];",
+            p_lbl, c_lbl, out_label
+        ));
+    } else if mode == "dip" {
+        let half_sec = (ctx.overlap_ms as f64 / 2000.0).max(0.02);
+        let fade_out_st = ctx.acc_dur_ms.saturating_sub(ctx.overlap_ms) as f64 / 1000.0;
+        let silence_after_sec = ctx.acc_dur_ms.saturating_sub(ctx.overlap_ms / 2) as f64 / 1000.0;
+        let p_lbl = format!("adip_p_{}", ctx.stage_id);
+        let c_lbl = format!("adip_c_{}", ctx.stage_id);
+        fc.push_str(&format!(
+            "[{}]afade=t=out:st={:.3}:d={:.3},volume=enable='gt(t,{:.3})':volume=0[{}];",
+            prev_label, fade_out_st, half_sec, silence_after_sec, p_lbl
+        ));
+        fc.push_str(&format!(
+            "[{}]volume=enable='lt(t,{:.3})':volume=0,afade=t=in:st={:.3}:d={:.3}[{}];",
+            curr_label, half_sec, half_sec, half_sec, c_lbl
+        ));
+        fc.push_str(&format!(
+            "[{}][{}]acrossfade=d={:.3}:c1=nofade:c2=nofade[{}];",
+            p_lbl, c_lbl, dur_sec, out_label
+        ));
+    } else {
+        fc.push_str(&format!(
+            "[{}][{}]acrossfade=d={:.3}:c1=qsin:c2=qsin[{}];",
+            prev_label, curr_label, dur_sec, out_label
+        ));
     }
 }
 
@@ -57,9 +479,316 @@ fn clean_pad_color(job: &ExportJob) -> String {
     }
 }
 
+fn parse_pad_color_rgb(clean_color: &str) -> (f64, f64, f64) {
+    let trimmed = clean_color.trim();
+    if trimmed.eq_ignore_ascii_case("white") {
+        return (1.0, 1.0, 1.0);
+    }
+    if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix('#')) {
+        if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f64 / 255.0;
+            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f64 / 255.0;
+            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f64 / 255.0;
+            return (r, g, b);
+        }
+        if hex.len() == 3 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            let r = u8::from_str_radix(&hex[0..1], 16).unwrap_or(0) as f64 / 15.0;
+            let g = u8::from_str_radix(&hex[1..2], 16).unwrap_or(0) as f64 / 15.0;
+            let b = u8::from_str_radix(&hex[2..3], 16).unwrap_or(0) as f64 / 15.0;
+            return (r, g, b);
+        }
+    }
+    (0.0, 0.0, 0.0)
+}
+
+pub fn evaluate_tone_curve_sample(x: f64, adj: &ExportVideoAdjustments) -> f64 {
+    let mut v = x.clamp(0.0, 1.0);
+
+    // 1. Exposure with highlight shoulder roll-off
+    let ev = (adj.exposure / 100.0) * 1.5;
+    if ev.abs() > 1e-4 {
+        let g = 2.0_f64.powf(ev);
+        if g > 1.0 {
+            v = (v * g) / (1.0 + (g - 1.0) * v.powi(3) * 0.55);
+        } else {
+            v *= g;
+        }
+    }
+
+    // 2. Brightness linear offset
+    if adj.brightness.abs() > 1e-4 {
+        v += (adj.brightness / 100.0) * 0.32;
+    }
+
+    // 3. Contrast pivot around 0.5
+    if adj.contrast.abs() > 1e-4 {
+        let c = if adj.contrast >= 0.0 {
+            1.0 + (adj.contrast / 100.0) * 0.85
+        } else {
+            1.0 + (adj.contrast / 100.0) * 0.65
+        };
+        v = 0.5 + (v - 0.5) * c;
+    }
+
+    // 4. Gamma power curve
+    v = v.clamp(0.0, 1.0);
+    if adj.gamma.abs() > 1e-4 {
+        let g = 2.0_f64.powf((adj.gamma / 100.0) * 0.75);
+        v = if v > 0.0 { v.powf(1.0 / g) } else { 0.0 };
+    }
+
+    // 5. Shadows & Highlights selective bell regions
+    let sh = adj.shadows / 100.0;
+    let hl = adj.highlights / 100.0;
+    if sh.abs() > 1e-4 || hl.abs() > 1e-4 {
+        let ws = (1.0 - v).powi(2) * (0.35 + 2.6 * v);
+        let wh = v.powi(2) * (0.35 + 2.6 * (1.0 - v));
+        v += sh * 0.24 * ws + hl * 0.24 * wh;
+        v = v.clamp(0.0, 1.0);
+    }
+
+    // 6. Blacks & Whites endpoint curves
+    let bl = adj.blacks / 100.0;
+    let wh_pt = adj.whites / 100.0;
+    if bl.abs() > 1e-4 || wh_pt.abs() > 1e-4 {
+        let wb = (1.0 - v).powi(3);
+        let ww = v.powi(3);
+        v += bl * 0.20 * wb + wh_pt * 0.20 * ww;
+        v = v.clamp(0.0, 1.0);
+    }
+
+    // 7. Matte fade black-floor lift
+    if adj.fade > 1e-4 {
+        let fd = (adj.fade / 100.0).clamp(0.0, 1.0);
+        let floor = fd * 0.14;
+        let ceil = 1.0 - fd * 0.04;
+        v = floor + v * (ceil - floor);
+    }
+
+    v.clamp(0.0, 1.0)
+}
+
+fn has_tone_curve_adjustments(adj: &ExportVideoAdjustments) -> bool {
+    adj.exposure.abs() > 0.01
+        || adj.brightness.abs() > 0.01
+        || adj.contrast.abs() > 0.01
+        || adj.highlights.abs() > 0.01
+        || adj.shadows.abs() > 0.01
+        || adj.whites.abs() > 0.01
+        || adj.blacks.abs() > 0.01
+        || adj.gamma.abs() > 0.01
+        || adj.fade > 0.01
+}
+
+fn mul_mat3(a: [f64; 9], b: [f64; 9]) -> [f64; 9] {
+    [
+        a[0] * b[0] + a[1] * b[3] + a[2] * b[6],
+        a[0] * b[1] + a[1] * b[4] + a[2] * b[7],
+        a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+        a[3] * b[0] + a[4] * b[3] + a[5] * b[6],
+        a[3] * b[1] + a[4] * b[4] + a[5] * b[7],
+        a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+        a[6] * b[0] + a[7] * b[3] + a[8] * b[6],
+        a[6] * b[1] + a[7] * b[4] + a[8] * b[7],
+        a[6] * b[2] + a[7] * b[5] + a[8] * b[8],
+    ]
+}
+
+pub fn compute_color_matrix_3x3(adj: &ExportVideoAdjustments) -> Option<[f64; 9]> {
+    let has_matrix = adj.temperature.abs() > 0.01
+        || adj.tint.abs() > 0.01
+        || adj.saturation.abs() > 0.01
+        || adj.hue.abs() > 0.01;
+    if !has_matrix {
+        return None;
+    }
+
+    const LR: f64 = 0.2126;
+    const LG: f64 = 0.7152;
+    const LB: f64 = 0.0722;
+
+    let temp = adj.temperature / 100.0;
+    let tn = adj.tint / 100.0;
+    let raw_r = (1.0 + 0.22 * temp + 0.09 * tn).max(0.1);
+    let raw_g = (1.0 + 0.02 * temp - 0.14 * tn).max(0.1);
+    let raw_b = (1.0 - 0.22 * temp + 0.09 * tn).max(0.1);
+    let luma = (LR * raw_r + LG * raw_g + LB * raw_b).max(0.2);
+    let m_wb = [
+        raw_r / luma,
+        0.0,
+        0.0,
+        0.0,
+        raw_g / luma,
+        0.0,
+        0.0,
+        0.0,
+        raw_b / luma,
+    ];
+
+    let s = (1.0 + adj.saturation / 100.0).max(0.0);
+    let inv_s = 1.0 - s;
+    let m_sat = [
+        LR * inv_s + s,
+        LG * inv_s,
+        LB * inv_s,
+        LR * inv_s,
+        LG * inv_s + s,
+        LB * inv_s,
+        LR * inv_s,
+        LG * inv_s,
+        LB * inv_s + s,
+    ];
+
+    let rad = adj.hue * std::f64::consts::PI / 180.0;
+    let cos_a = rad.cos();
+    let sin_a = rad.sin();
+    let m_hue = [
+        LR + cos_a * (1.0 - LR) + sin_a * -LR,
+        LG + cos_a * -LG + sin_a * -LG,
+        LB + cos_a * -LB + sin_a * (1.0 - LB),
+        LR + cos_a * -LR + sin_a * 0.143,
+        LG + cos_a * (1.0 - LG) + sin_a * 0.14,
+        LB + cos_a * -LB + sin_a * -0.283,
+        LR + cos_a * -LR + sin_a * -(1.0 - LR),
+        LG + cos_a * -LG + sin_a * LG,
+        LB + cos_a * (1.0 - LB) + sin_a * LB,
+    ];
+
+    let combined = mul_mat3(m_hue, mul_mat3(m_sat, m_wb));
+    Some(combined.map(|v| v.clamp(-2.0, 2.0)))
+}
+
+fn build_v1_opacity_filter(opacity_pct: f64, clean_color: &str) -> Option<String> {
+    if opacity_pct >= 99.9 {
+        return None;
+    }
+    let alpha = (opacity_pct / 100.0).clamp(0.0, 1.0);
+    let (bg_r, bg_g, bg_b) = parse_pad_color_rgb(clean_color);
+    let r0 = bg_r * (1.0 - alpha);
+    let r1 = (r0 + alpha).clamp(0.0, 1.0);
+    let g0 = bg_g * (1.0 - alpha);
+    let g1 = (g0 + alpha).clamp(0.0, 1.0);
+    let b0 = bg_b * (1.0 - alpha);
+    let b1 = (b0 + alpha).clamp(0.0, 1.0);
+    Some(format!(
+        "curves=r='0/{:.4} 1/{:.4}':g='0/{:.4} 1/{:.4}':b='0/{:.4} 1/{:.4}'",
+        r0, r1, g0, g1, b0, b1
+    ))
+}
+
+pub fn build_video_adjustments_filters(
+    adj: &ExportVideoAdjustments,
+    frame_w: u32,
+    frame_h: u32,
+    preserve_alpha: bool,
+) -> (Vec<String>, bool) {
+    let mut filters = Vec::new();
+
+    // 1. Chromatic aberration (RGB channel horizontal lens shift)
+    if adj.aberration > 0.01 {
+        let px = ((adj.aberration / 100.0) * 6.0 * (frame_w.max(2) as f64 / 1920.0))
+            .round()
+            .clamp(1.0, 48.0) as i32;
+        filters.push(format!("rgbashift=rh={}:bh={}:edge=smear", -px, px));
+    }
+
+    // 2. 3x3 Color Matrix (White balance + Saturation + Hue)
+    if let Some(m) = compute_color_matrix_3x3(adj) {
+        filters.push(format!(
+            "colorchannelmixer=rr={:.4}:rg={:.4}:rb={:.4}:gr={:.4}:gg={:.4}:gb={:.4}:br={:.4}:bg={:.4}:bb={:.4}",
+            m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]
+        ));
+    }
+
+    // 3. Vibrance (selective skin-safe saturation)
+    if adj.vibrance.abs() > 0.01 {
+        let intensity = ((adj.vibrance / 100.0) * 1.10).clamp(-2.0, 2.0);
+        filters.push(format!("vibrance=intensity={:.3}", intensity));
+    }
+
+    // 4. Parametric Tone Curve (Exposure, Brightness, Contrast, Gamma, Shadows, Highlights, Blacks, Whites, Fade)
+    if has_tone_curve_adjustments(adj) {
+        let mut points = Vec::with_capacity(17);
+        for i in 0..=16 {
+            let x = i as f64 / 16.0;
+            let y = evaluate_tone_curve_sample(x, adj).clamp(0.0, 1.0);
+            points.push(format!("{:.4}/{:.4}", x, y));
+        }
+        filters.push(format!("curves=interp=pchip:m='{}'", points.join(" ")));
+    }
+
+    // 5. 3D Spatial + Temporal Denoise
+    if adj.denoise > 0.01 {
+        let d = (adj.denoise / 100.0).clamp(0.0, 1.0);
+        let ls = 6.0 * d;
+        let cs = 4.5 * d;
+        let lt = 8.0 * d;
+        let ct = 6.0 * d;
+        filters.push(format!(
+            "hqdn3d=luma_spatial={:.2}:chroma_spatial={:.2}:luma_tmp={:.2}:chroma_tmp={:.2}",
+            ls, cs, lt, ct
+        ));
+    }
+
+    // 6. Deband (gradient banding cleanup)
+    if adj.deband > 0.01 {
+        let db = (adj.deband / 100.0).clamp(0.0, 1.0);
+        let thr = (0.008 + db * 0.032).clamp(0.001, 0.45);
+        let rng = (12.0 + db * 20.0).round() as i32;
+        filters.push(format!(
+            "deband=1thr={:.4}:2thr={:.4}:3thr={:.4}:range={}:blur=1",
+            thr, thr, thr, rng
+        ));
+    }
+
+    // 7. Clarity (large-radius local midtone contrast / soft bloom)
+    if adj.clarity.abs() > 0.01 {
+        let c = (adj.clarity / 100.0).clamp(-1.0, 1.0);
+        let la = if c >= 0.0 { c * 1.10 } else { c * 0.75 };
+        filters.push(format!("unsharp=lx=13:ly=13:la={:.3}", la));
+    }
+
+    // 8. Contrast Adaptive Sharpening (AMD FidelityFX CAS)
+    if adj.sharpness > 0.1 {
+        let strength = (adj.sharpness / 100.0).clamp(0.0, 1.0);
+        filters.push(format!("cas=strength={:.2}", strength));
+    }
+
+    // 9. Optical Gaussian Blur
+    if adj.blur > 0.01 {
+        let sigma = ((adj.blur / 100.0) * 18.0 * (frame_h.max(2) as f64 / 1080.0))
+            .clamp(0.2, 120.0);
+        filters.push(format!("gblur=sigma={:.2}:steps=2", sigma));
+    }
+
+    // 10. Vignette
+    if adj.vignette.abs() > 0.01 {
+        let v = (adj.vignette.abs() / 100.0).clamp(0.0, 1.0);
+        let angle = (0.08 + v * 0.58).clamp(0.05, 1.50);
+        let mode = if adj.vignette >= 0.0 { "forward" } else { "backward" };
+        filters.push(format!("vignette=angle={:.4}:mode={}", angle, mode));
+    }
+
+    // 11. Monochromatic Film Grain
+    if adj.grain > 0.01 {
+        let s = ((adj.grain / 100.0) * 28.0).round().clamp(1.0, 100.0) as i32;
+        if preserve_alpha {
+            filters.push(format!("format=yuva444p,noise=c0s={}:c0f=t+u,format=rgba", s));
+        } else {
+            filters.push(format!("noise=c0s={}:c0f=t+u", s));
+        }
+    }
+
+    let needs_alpha_split_wrap =
+        preserve_alpha && (adj.denoise > 0.01 || adj.vignette.abs() > 0.01);
+
+    (filters, needs_alpha_split_wrap)
+}
+
 fn compute_canvas_dimensions(
     primary_src: &ExportSource,
     primary_rotate: u32,
+    primary_crop: &ExportCrop,
     job: &ExportJob,
 ) -> (u32, u32) {
     let raw_w = primary_src.width.unwrap_or(1920) as f64;
@@ -70,17 +799,17 @@ fn compute_canvas_dimensions(
         (raw_w, raw_h)
     };
 
-    let has_custom_crop = job.crop.width > 0.0
-        && job.crop.height > 0.0
-        && (job.crop.width < 0.999
-            || job.crop.height < 0.999
-            || job.crop.x > 0.001
-            || job.crop.y > 0.001);
+    let has_custom_crop = primary_crop.width > 0.0
+        && primary_crop.height > 0.0
+        && (primary_crop.width < 0.999
+            || primary_crop.height < 0.999
+            || primary_crop.x > 0.001
+            || primary_crop.y > 0.001);
 
     let target_ratio =
         if job.fit_mode == "crop" && job.aspect.id == "original" && has_custom_crop {
-            let cw = make_even(job.crop.width * src_w) as f64;
-            let ch = make_even(job.crop.height * src_h).max(2) as f64;
+            let cw = make_even(primary_crop.width * src_w) as f64;
+            let ch = make_even(primary_crop.height * src_h).max(2) as f64;
             cw / ch
         } else {
             resolve_aspect_ratio(&job.aspect, src_w, src_h)
@@ -377,6 +1106,8 @@ fn build_canvas_bounds_filter(
     target_w: u32,
     target_h: u32,
     clean_color: &str,
+    adj: Option<&ExportVideoAdjustments>,
+    preserve_alpha: bool,
 ) -> String {
     let scaled_w = make_even((bounds.width * target_w as f64).max(2.0));
     let scaled_h = make_even((bounds.height * target_h as f64).max(2.0));
@@ -419,6 +1150,16 @@ fn build_canvas_bounds_filter(
         ));
     }
 
+    if let Some(a) = adj {
+        let (adj_filters, _) = build_video_adjustments_filters(a, vis_w, vis_h, preserve_alpha);
+        parts.extend(adj_filters);
+        if !preserve_alpha {
+            if let Some(op_filter) = build_v1_opacity_filter(a.opacity, clean_color) {
+                parts.push(op_filter);
+            }
+        }
+    }
+
     if vis_w < target_w || vis_h < target_h || pad_x > 0 || pad_y > 0 {
         parts.push(format!(
             "pad=w={}:h={}:x={}:y={}:color={}",
@@ -436,8 +1177,15 @@ fn build_clip_video_filter_internal(
     job: &ExportJob,
     forced_canvas: Option<(u32, u32)>,
     include_speed: bool,
+    apply_adjustments: bool,
 ) -> String {
     let mut filters = Vec::new();
+    let adj = clip.resolved_adjustments();
+    let adj_opt = if apply_adjustments && adj.is_active() {
+        Some(&adj)
+    } else {
+        None
+    };
 
     // 1. Rotation
     match clip.rotate {
@@ -464,19 +1212,22 @@ fn build_clip_video_filter_internal(
         (raw_w, raw_h)
     };
 
-    let has_custom_crop = job.crop.width > 0.0
-        && job.crop.height > 0.0
-        && (job.crop.width < 0.999
-            || job.crop.height < 0.999
-            || job.crop.x > 0.001
-            || job.crop.y > 0.001);
+    let effective_crop = clip.crop.as_ref().unwrap_or(&job.crop);
+    let effective_bounds = clip.canvas_bounds.as_ref().or(job.canvas_bounds.as_ref());
+
+    let has_custom_crop = effective_crop.width > 0.0
+        && effective_crop.height > 0.0
+        && (effective_crop.width < 0.999
+            || effective_crop.height < 0.999
+            || effective_crop.x > 0.001
+            || effective_crop.y > 0.001);
 
     let (target_w, target_h, target_ratio) = if let Some((cw, ch)) = forced_canvas {
         (cw, ch, cw as f64 / ch.max(1) as f64)
     } else {
         let ratio = if job.fit_mode == "crop" && job.aspect.id == "original" && has_custom_crop {
-            let cw = make_even(job.crop.width * src_w) as f64;
-            let ch = make_even(job.crop.height * src_h).max(2) as f64;
+            let cw = make_even(effective_crop.width * src_w) as f64;
+            let ch = make_even(effective_crop.height * src_h).max(2) as f64;
             cw / ch
         } else {
             resolve_aspect_ratio(&job.aspect, src_w, src_h)
@@ -502,15 +1253,15 @@ fn build_clip_video_filter_internal(
     };
 
     let clean_color = clean_pad_color(job);
+    let mut adjustments_applied = false;
 
     match job.fit_mode.as_str() {
         "crop" => {
-            let crop = &job.crop;
             if has_custom_crop {
-                let cw = make_even(crop.width * src_w);
-                let ch = make_even(crop.height * src_h);
-                let cx = make_even(crop.x * src_w);
-                let cy = make_even(crop.y * src_h);
+                let cw = make_even(effective_crop.width * src_w);
+                let ch = make_even(effective_crop.height * src_h);
+                let cx = make_even(effective_crop.x * src_w);
+                let cy = make_even(effective_crop.y * src_h);
                 filters.push(format!("crop=w={}:h={}:x={}:y={}", cw, ch, cx, cy));
             } else {
                 let src_ratio = src_w / src_h;
@@ -529,26 +1280,32 @@ fn build_clip_video_filter_internal(
             filters.push(format!("scale=w={}:h={},setsar=1", target_w, target_h));
         }
         "stretch" => {
-            if let Some(bounds) = &job.canvas_bounds {
+            if let Some(bounds) = effective_bounds {
                 filters.push(build_canvas_bounds_filter(
                     bounds,
                     target_w,
                     target_h,
                     &clean_color,
+                    adj_opt,
+                    source.is_image,
                 ));
+                adjustments_applied = true;
             } else {
                 filters.push(format!("scale=w={}:h={},setsar=1", target_w, target_h));
             }
         }
         _ => {
             // "fit" Letterbox / Pillarbox
-            if let Some(bounds) = &job.canvas_bounds {
+            if let Some(bounds) = effective_bounds {
                 filters.push(build_canvas_bounds_filter(
                     bounds,
                     target_w,
                     target_h,
                     &clean_color,
+                    adj_opt,
+                    source.is_image,
                 ));
+                adjustments_applied = true;
             } else {
                 let src_ratio = src_w / src_h;
                 if (src_ratio - target_ratio).abs() > 0.005 {
@@ -560,9 +1317,21 @@ fn build_clip_video_filter_internal(
                     let pad_x = ((target_w.saturating_sub(scaled_w)) / 2 / 2) * 2;
                     let pad_y = ((target_h.saturating_sub(scaled_h)) / 2 / 2) * 2;
 
+                    filters.push(format!("scale=w={}:h={}", scaled_w, scaled_h));
+                    if let Some(a) = adj_opt {
+                        let (adj_filters, _) =
+                            build_video_adjustments_filters(a, scaled_w, scaled_h, source.is_image);
+                        filters.extend(adj_filters);
+                        if !source.is_image {
+                            if let Some(op_filter) = build_v1_opacity_filter(a.opacity, &clean_color) {
+                                filters.push(op_filter);
+                            }
+                        }
+                        adjustments_applied = true;
+                    }
                     filters.push(format!(
-                        "scale=w={}:h={},pad=w={}:h={}:x={}:y={}:color={},setsar=1",
-                        scaled_w, scaled_h, target_w, target_h, pad_x, pad_y, clean_color
+                        "pad=w={}:h={}:x={}:y={}:color={},setsar=1",
+                        target_w, target_h, pad_x, pad_y, clean_color
                     ));
                 } else {
                     filters.push(format!("scale=w={}:h={},setsar=1", target_w, target_h));
@@ -571,10 +1340,18 @@ fn build_clip_video_filter_internal(
         }
     }
 
-    // 4. Contrast Adaptive Sharpening (AMD FidelityFX CAS)
-    if clip.sharpness > 0.001 {
-        let strength = clip.sharpness.clamp(0.0, 1.0);
-        filters.push(format!("cas=strength={:.2}", strength));
+    // 4. Video Adjustments (if not already applied before pad=)
+    if !adjustments_applied {
+        if let Some(a) = adj_opt {
+            let (adj_filters, _) =
+                build_video_adjustments_filters(a, target_w, target_h, source.is_image);
+            filters.extend(adj_filters);
+            if !source.is_image {
+                if let Some(op_filter) = build_v1_opacity_filter(a.opacity, &clean_color) {
+                    filters.push(op_filter);
+                }
+            }
+        }
     }
 
     // 5. Speed (setpts)
@@ -590,13 +1367,14 @@ pub fn build_clip_video_filter(
     source: &ExportSource,
     job: &ExportJob,
 ) -> String {
-    build_clip_video_filter_internal(clip, source, job, None, true)
+    build_clip_video_filter_internal(clip, source, job, None, true, true)
 }
 
 fn build_overlay_video_chain(
     clip: &ExportClip,
     ov_w: u32,
     ov_h: u32,
+    include_adjustments: bool,
 ) -> String {
     let mut filters = Vec::new();
 
@@ -620,10 +1398,17 @@ fn build_overlay_video_chain(
     filters.push("format=rgba".to_string());
     filters.push(format!("scale=w={}:h={},setsar=1", ov_w, ov_h));
 
-    // 4. Optional CAS sharpening
-    if clip.sharpness > 0.001 {
-        let strength = clip.sharpness.clamp(0.0, 1.0);
-        filters.push(format!("cas=strength={:.2}", strength));
+    // 4. Video Adjustments (preserving alpha)
+    if include_adjustments {
+        let adj = clip.resolved_adjustments();
+        if adj.is_active() {
+            let (adj_filters, _) = build_video_adjustments_filters(&adj, ov_w, ov_h, true);
+            filters.extend(adj_filters);
+            if adj.opacity < 99.9 {
+                let alpha = (adj.opacity / 100.0).clamp(0.0, 1.0);
+                filters.push(format!("format=rgba,colorchannelmixer=aa={:.3}", alpha));
+            }
+        }
     }
 
     filters.join(",")
@@ -795,14 +1580,12 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
     let has_overlays = !resolved_overlays.is_empty();
     let has_any_image = resolved_main.iter().any(|(_, s)| s.is_image)
         || resolved_overlays.iter().any(|(_, s)| s.is_image);
+    let has_main_transitions = resolved_main
+        .iter()
+        .any(|(c, _)| is_active_transition(c.transition_in.as_ref()) || is_active_transition(c.transition_out.as_ref()));
+    let has_any_transitions = has_any_transition(&enabled_clips);
 
-    // Compute total timeline span across ALL tracks
-    let mut main_end_ms: u64 = 0;
-    for (clip, _) in &resolved_main {
-        let start = clip.start_ms.unwrap_or(main_end_ms);
-        let dur = effective_clip_duration_ms(clip);
-        main_end_ms = main_end_ms.max(start + dur);
-    }
+    let (main_timings, main_end_ms) = compute_main_track_timing(&resolved_main);
     let mut total_timeline_ms = main_end_ms;
     for (clip, _) in &resolved_overlays {
         let start = clip.start_ms.unwrap_or(0);
@@ -824,8 +1607,10 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
         .copied()
         .ok_or("No clips available for export")?;
 
-    let (canvas_w, canvas_h) = compute_canvas_dimensions(primary_src, primary_clip.rotate, job);
-    let target_fps = resolve_target_fps(job);
+    let primary_crop = primary_clip.crop.as_ref().unwrap_or(&job.crop);
+    let (canvas_w, canvas_h) =
+        compute_canvas_dimensions(primary_src, primary_clip.rotate, primary_crop, job);
+    let target_fps = resolve_target_fps_for_job(job, primary_src);
     let clean_color = clean_pad_color(job);
 
     let mut args: Vec<String> = vec!["-nostats".into(), "-progress".into(), "pipe:1".into()];
@@ -858,19 +1643,32 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
     let explicit_stream_copy =
         job.output.format == "copy" || job.output.video_codec.as_deref() == Some("copy");
 
-    let single_clip_no_edits = if resolved_main.len() == 1 && !has_overlays && !has_any_image {
+    let single_clip_no_edits =
+        if resolved_main.len() == 1 && !has_overlays && !has_any_image && !has_any_transitions {
         let (clip, _) = resolved_main[0];
+        let clip_has_custom_crop = clip
+            .crop
+            .as_ref()
+            .map(|c| {
+                c.x.abs() > 0.001
+                    || c.y.abs() > 0.001
+                    || (c.width - 1.0).abs() > 0.001
+                    || (c.height - 1.0).abs() > 0.001
+            })
+            .unwrap_or(false);
         clip.start_ms.unwrap_or(0) == 0
             && job.aspect.id == "original"
             && job.fit_mode == "fit"
             && job.canvas_bounds.is_none()
+            && clip.canvas_bounds.is_none()
             && !has_custom_crop
+            && !clip_has_custom_crop
             && job.output.resolution_mode == "auto"
             && clip.rotate == 0
             && !clip.flip_h
             && !clip.flip_v
             && (clip.speed - 1.0).abs() < 0.001
-            && clip.sharpness <= 0.001
+            && !clip.has_active_video_adjustments()
             && job.audio.volume_db.abs() < 0.1
             && clip.volume_db.abs() < 0.1
             && !job.audio.muted
@@ -986,15 +1784,26 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
             };
 
             let raw_label = format!("ova_raw_{}", ov_idx);
+            let mut ov_a_fade = String::new();
+            let eff_dur_sec = (dur_sec / if clip.speed > 0.0 { clip.speed } else { 1.0 }).max(0.05);
+            if let Some(tr_in) = clip.transition_in.as_ref().filter(|t| is_active_transition(Some(t))) {
+                let d = (tr_in.duration_ms as f64 / 1000.0).min(eff_dur_sec - 0.04).max(0.02);
+                ov_a_fade.push_str(&format!(",afade=t=in:st=0:d={:.3}", d));
+            }
+            if let Some(tr_out) = clip.transition_out.as_ref().filter(|t| is_active_transition(Some(t))) {
+                let d = (tr_out.duration_ms as f64 / 1000.0).min(eff_dur_sec - 0.04).max(0.02);
+                let st = (eff_dur_sec - d).max(0.0);
+                ov_a_fade.push_str(&format!(",afade=t=out:st={:.3}:d={:.3}", st, d));
+            }
             if a_filter.is_empty() {
                 fc.push_str(&format!(
-                    "[{}:a]{},aresample=48000,aformat=channel_layouts=stereo[{}];",
-                    input_idx, a_trim, raw_label
+                    "[{}:a]{},aresample=48000,aformat=channel_layouts=stereo{}[{}];",
+                    input_idx, a_trim, ov_a_fade, raw_label
                 ));
             } else {
                 fc.push_str(&format!(
-                    "[{}:a]{},{},aresample=48000,aformat=channel_layouts=stereo[{}];",
-                    input_idx, a_trim, a_filter, raw_label
+                    "[{}:a]{},{},aresample=48000,aformat=channel_layouts=stereo{}[{}];",
+                    input_idx, a_trim, a_filter, ov_a_fade, raw_label
                 ));
             }
 
@@ -1059,6 +1868,122 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
             filter_complex.push_str(&format!(
                 "anullsrc=r=48000:cl=stereo:d={:.3}[{}]",
                 total_sec, base_audio_label
+            ));
+        } else if has_main_transitions {
+            // Normalize per-clip audio before acrossfade / afade
+            for i in 0..resolved_main.len() {
+                filter_complex.push_str(&format!(
+                    "[a{}]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[an_{}];",
+                    i, i
+                ));
+            }
+
+            let mut concat_inputs = String::new();
+            let mut total_segments = 0usize;
+            let mut current_timeline_ms: u64 = 0;
+            let mut stage_counter: usize = 0;
+            let mut idx = 0usize;
+
+            while idx < main_timings.len() {
+                let first = &main_timings[idx];
+                if first.gap_before_ms > 0 {
+                    let gap_sec = first.gap_before_ms as f64 / 1000.0;
+                    filter_complex.push_str(&format!(
+                        "anullsrc=r=48000:cl=stereo:d={:.3}[ga_{}];",
+                        gap_sec, idx
+                    ));
+                    concat_inputs.push_str(&format!("[ga_{}]", idx));
+                    total_segments += 1;
+                    current_timeline_ms += first.gap_before_ms;
+                }
+
+                let mut end_idx = idx;
+                while end_idx + 1 < main_timings.len() && main_timings[end_idx + 1].is_contiguous_with_prev {
+                    end_idx += 1;
+                }
+
+                let mut acc_dur_ms = first.dur_ms;
+                let mut acc_label = format!("an_{}", idx);
+
+                if first.intro_dur_ms > 0 {
+                    let intro_sec = first.intro_dur_ms as f64 / 1000.0;
+                    let next_lbl = format!("an_in_{}", idx);
+                    filter_complex.push_str(&format!(
+                        "[{}]afade=t=in:st=0:d={:.3}[{}];",
+                        acc_label, intro_sec, next_lbl
+                    ));
+                    acc_label = next_lbl;
+                }
+
+                for k in (idx + 1)..=end_idx {
+                    let item = &main_timings[k];
+                    let curr_lbl = format!("an_{}", k);
+                    if item.overlap_in_ms > 0 {
+                        if let Some(tr) = resolved_main[k].0.transition_in.as_ref() {
+                            stage_counter += 1;
+                            let next_lbl = format!("ax_{}", stage_counter);
+                            let ctx = TransitionStageCtx {
+                                tr,
+                                acc_dur_ms,
+                                overlap_ms: item.overlap_in_ms,
+                                canvas_w,
+                                canvas_h,
+                                target_fps,
+                                stage_id: stage_counter,
+                            };
+                            append_audio_transition_stage(
+                                &mut filter_complex,
+                                &acc_label,
+                                &curr_lbl,
+                                &next_lbl,
+                                &ctx,
+                            );
+                            acc_label = next_lbl;
+                            acc_dur_ms = acc_dur_ms + item.dur_ms - item.overlap_in_ms;
+                        }
+                    } else {
+                        stage_counter += 1;
+                        let next_lbl = format!("ac_{}", stage_counter);
+                        filter_complex.push_str(&format!(
+                            "[{}][{}]concat=n=2:v=0:a=1[{}];",
+                            acc_label, curr_lbl, next_lbl
+                        ));
+                        acc_label = next_lbl;
+                        acc_dur_ms += item.dur_ms;
+                    }
+                }
+
+                let last = &main_timings[end_idx];
+                if last.outro_dur_ms > 0 {
+                    let outro_sec = last.outro_dur_ms as f64 / 1000.0;
+                    let st_sec = acc_dur_ms.saturating_sub(last.outro_dur_ms) as f64 / 1000.0;
+                    let next_lbl = format!("an_out_{}", end_idx);
+                    filter_complex.push_str(&format!(
+                        "[{}]afade=t=out:st={:.3}:d={:.3}[{}];",
+                        acc_label, st_sec, outro_sec, next_lbl
+                    ));
+                    acc_label = next_lbl;
+                }
+
+                concat_inputs.push_str(&format!("[{}]", acc_label));
+                total_segments += 1;
+                current_timeline_ms += acc_dur_ms;
+                idx = end_idx + 1;
+            }
+
+            if current_timeline_ms < total_timeline_ms {
+                let tail_sec = (total_timeline_ms - current_timeline_ms) as f64 / 1000.0;
+                filter_complex.push_str(&format!(
+                    "anullsrc=r=48000:cl=stereo:d={:.3}[ga_tail];",
+                    tail_sec
+                ));
+                concat_inputs.push_str("[ga_tail]");
+                total_segments += 1;
+            }
+
+            filter_complex.push_str(&format!(
+                "{}concat=n={}:v=0:a=1[{}]",
+                concat_inputs, total_segments, base_audio_label
             ));
         } else {
             let mut concat_inputs = String::new();
@@ -1169,11 +2094,62 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
             let ov_x = (bounds.x * canvas_w as f64).round() as i32;
             let ov_y = (bounds.y * canvas_h as f64).round() as i32;
 
-            let ov_chain = build_overlay_video_chain(clip, ov_w, ov_h);
+            let ov_adj = clip.resolved_adjustments();
+            let (ov_adj_filters, ov_needs_alpha_split) = if ov_adj.is_active() {
+                build_video_adjustments_filters(&ov_adj, ov_w, ov_h, true)
+            } else {
+                (Vec::new(), false)
+            };
+            let ov_chain = build_overlay_video_chain(clip, ov_w, ov_h, !ov_needs_alpha_split);
             let ov_label = format!("ov_{}", ov_idx);
+            let ov_alpha_op = if ov_adj.opacity < 99.9 {
+                format!(",colorchannelmixer=aa={:.3}", (ov_adj.opacity / 100.0).clamp(0.0, 1.0))
+            } else {
+                String::new()
+            };
+
+            let mut ov_fade = String::new();
+            if let Some(tr_in) = clip.transition_in.as_ref().filter(|t| is_active_transition(Some(t))) {
+                let d = (tr_in.duration_ms as f64 / 1000.0)
+                    .min(effective_dur_sec - 0.04)
+                    .max(0.02);
+                ov_fade.push_str(&format!(",fade=t=in:st=0:d={:.3}:alpha=1", d));
+            }
+            if let Some(tr_out) = clip.transition_out.as_ref().filter(|t| is_active_transition(Some(t))) {
+                let d = (tr_out.duration_ms as f64 / 1000.0)
+                    .min(effective_dur_sec - 0.04)
+                    .max(0.02);
+                let st = (effective_dur_sec - d).max(0.0);
+                ov_fade.push_str(&format!(",fade=t=out:st={:.3}:d={:.3}:alpha=1", st, d));
+            }
 
             if source.is_image {
-                fc.push_str(&format!("[{}:v]{}[{}];", input_idx, ov_chain, ov_label));
+                if ov_needs_alpha_split {
+                    let raw_lbl = format!("ov_raw_{}", ov_idx);
+                    let c_lbl = format!("ov_c_{}", ov_idx);
+                    let a_lbl = format!("ov_a_{}", ov_idx);
+                    let al_lbl = format!("ov_al_{}", ov_idx);
+                    let cf_lbl = format!("ov_cf_{}", ov_idx);
+                    let adj_str = ov_adj_filters.join(",");
+                    if ov_fade.is_empty() {
+                        fc.push_str(&format!(
+                            "[{}:v]{}[{}];[{}]split[{}][{}];[{}]alphaextract[{}];[{}]{},format=yuv444p[{}];[{}][{}]alphamerge,format=rgba{}[{}];",
+                            input_idx, ov_chain, raw_lbl, raw_lbl, c_lbl, a_lbl, a_lbl, al_lbl, c_lbl, adj_str, cf_lbl, cf_lbl, al_lbl, ov_alpha_op, ov_label
+                        ));
+                    } else {
+                        fc.push_str(&format!(
+                            "[{}:v]loop=loop=-1:size=1:start=0,trim=duration={:.3},setpts=PTS-STARTPTS,fps={},{}{}[{}];[{}]split[{}][{}];[{}]alphaextract[{}];[{}]{},format=yuv444p[{}];[{}][{}]alphamerge,format=rgba{}{},setpts=PTS-STARTPTS+{:.3}/TB[{}];",
+                            input_idx, effective_dur_sec, target_fps, ov_chain, "", raw_lbl, raw_lbl, c_lbl, a_lbl, a_lbl, al_lbl, c_lbl, adj_str, cf_lbl, cf_lbl, al_lbl, ov_alpha_op, ov_fade, start_sec, ov_label
+                        ));
+                    }
+                } else if ov_fade.is_empty() {
+                    fc.push_str(&format!("[{}:v]{}[{}];", input_idx, ov_chain, ov_label));
+                } else {
+                    fc.push_str(&format!(
+                        "[{}:v]loop=loop=-1:size=1:start=0,trim=duration={:.3},setpts=PTS-STARTPTS,fps={},{}{},setpts=PTS-STARTPTS+{:.3}/TB[{}];",
+                        input_idx, effective_dur_sec, target_fps, ov_chain, ov_fade, start_sec, ov_label
+                    ));
+                }
             } else {
                 let v_trim = if is_mpeg_ts_path(&source.path) {
                     format!(
@@ -1194,10 +2170,23 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
                     String::new()
                 };
 
-                fc.push_str(&format!(
-                    "[{}:v]{},{}{}[{}];",
-                    input_idx, v_trim, ov_chain, pts_shift, ov_label
-                ));
+                if ov_needs_alpha_split {
+                    let raw_lbl = format!("ov_raw_{}", ov_idx);
+                    let c_lbl = format!("ov_c_{}", ov_idx);
+                    let a_lbl = format!("ov_a_{}", ov_idx);
+                    let al_lbl = format!("ov_al_{}", ov_idx);
+                    let cf_lbl = format!("ov_cf_{}", ov_idx);
+                    let adj_str = ov_adj_filters.join(",");
+                    fc.push_str(&format!(
+                        "[{}:v]{},{}[{}];[{}]split[{}][{}];[{}]alphaextract[{}];[{}]{},format=yuv444p[{}];[{}][{}]alphamerge,format=rgba{}{}{}[{}];",
+                        input_idx, v_trim, ov_chain, raw_lbl, raw_lbl, c_lbl, a_lbl, a_lbl, al_lbl, c_lbl, adj_str, cf_lbl, cf_lbl, al_lbl, ov_alpha_op, ov_fade, pts_shift, ov_label
+                    ));
+                } else {
+                    fc.push_str(&format!(
+                        "[{}:v]{},{}{}{}[{}];",
+                        input_idx, v_trim, ov_chain, ov_fade, pts_shift, ov_label
+                    ));
+                }
             }
 
             let is_last = ov_idx + 1 == total_ov;
@@ -1206,7 +2195,11 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
             } else {
                 format!("comp_{}", ov_idx)
             };
-            let eof_action = if source.is_image { "repeat" } else { "pass" };
+            let eof_action = if source.is_image && ov_fade.is_empty() {
+                "repeat"
+            } else {
+                "pass"
+            };
             let post_fmt = if is_last { ",format=yuv420p" } else { "" };
 
             fc.push_str(&format!(
@@ -1226,7 +2219,7 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
     };
 
     let force_uniform_v1_canvas =
-        has_overlays || has_any_image || resolved_main.len() > 1;
+        has_overlays || has_any_image || resolved_main.len() > 1 || has_main_transitions;
     let forced_canvas_opt = if force_uniform_v1_canvas {
         Some((canvas_w, canvas_h))
     } else {
@@ -1242,17 +2235,37 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
             let effective_dur_sec = dur_sec / speed;
 
             if source.is_image {
+                let img_adj = clip.resolved_adjustments();
+                let (img_adj_filters, img_needs_alpha_split) = if img_adj.is_active() {
+                    build_video_adjustments_filters(&img_adj, canvas_w, canvas_h, true)
+                } else {
+                    (Vec::new(), false)
+                };
+                let img_alpha_op = if img_adj.opacity < 99.9 {
+                    format!(",colorchannelmixer=aa={:.3}", (img_adj.opacity / 100.0).clamp(0.0, 1.0))
+                } else {
+                    String::new()
+                };
                 let v_filter = build_clip_video_filter_internal(
                     clip,
                     source,
                     job,
                     Some((canvas_w, canvas_h)),
                     false,
+                    !img_needs_alpha_split,
                 );
-                filter_complex.push_str(&format!(
-                    "color=c={}:s={}x{}:r={}:d={:.3}[bg_{}];[{}:v]format=rgba,{}[fg_{}];[bg_{}][fg_{}]overlay=x=0:y=0:eof_action=repeat:shortest=1,format=yuv420p[v{}];",
-                    clean_color, canvas_w, canvas_h, target_fps, effective_dur_sec, i, i, v_filter, i, i, i, i
-                ));
+                if img_needs_alpha_split {
+                    let adj_str = img_adj_filters.join(",");
+                    filter_complex.push_str(&format!(
+                        "color=c={}:s={}x{}:r={}:d={:.3}[bg_{}];[{}:v]format=rgba,{}[fg_raw_{}];[fg_raw_{}]split[fg_c_{}][fg_a_{}];[fg_a_{}]alphaextract[fg_al_{}];[fg_c_{}]{},format=yuv444p[fg_cf_{}];[fg_cf_{}][fg_al_{}]alphamerge,format=rgba{}[fg_{}];[bg_{}][fg_{}]overlay=x=0:y=0:eof_action=repeat:shortest=1,format=yuv420p[v{}];",
+                        clean_color, canvas_w, canvas_h, target_fps, effective_dur_sec, i, i, v_filter, i, i, i, i, i, i, i, adj_str, i, i, i, img_alpha_op, i, i, i, i
+                    ));
+                } else {
+                    filter_complex.push_str(&format!(
+                        "color=c={}:s={}x{}:r={}:d={:.3}[bg_{}];[{}:v]format=rgba,{}{}[fg_{}];[bg_{}][fg_{}]overlay=x=0:y=0:eof_action=repeat:shortest=1,format=yuv420p[v{}];",
+                        clean_color, canvas_w, canvas_h, target_fps, effective_dur_sec, i, i, v_filter, img_alpha_op, i, i, i, i
+                    ));
+                }
             } else {
                 let v_trim = if is_mpeg_ts_path(&source.path) {
                     format!(
@@ -1269,8 +2282,9 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
                     job,
                     forced_canvas_opt,
                     true,
+                    true,
                 );
-                let norm_suffix = if has_any_image {
+                let norm_suffix = if has_any_image || has_main_transitions {
                     format!(",fps={},format=yuv420p", target_fps)
                 } else {
                     String::new()
@@ -1293,6 +2307,138 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
             filter_complex.push_str(&format!(
                 "color=c={}:s={}x{}:d={:.3}:r={},format=yuv420p[{}];",
                 clean_color, canvas_w, canvas_h, total_sec, target_fps, base_v_label
+            ));
+        } else if has_main_transitions {
+            let mut concat_inputs = String::new();
+            let mut total_segments = 0usize;
+            let mut current_timeline_ms: u64 = 0;
+            let mut stage_counter: usize = 0;
+            let mut idx = 0usize;
+
+            while idx < main_timings.len() {
+                let first = &main_timings[idx];
+                if first.gap_before_ms > 0 {
+                    let gap_sec = first.gap_before_ms as f64 / 1000.0;
+                    filter_complex.push_str(&format!(
+                        "color=c=black:s={}x{}:d={:.3}:r={},format=yuv420p[gv_{}];",
+                        canvas_w, canvas_h, gap_sec, target_fps, idx
+                    ));
+                    concat_inputs.push_str(&format!("[gv_{}]", idx));
+                    total_segments += 1;
+                    current_timeline_ms += first.gap_before_ms;
+                }
+
+                let mut end_idx = idx;
+                while end_idx + 1 < main_timings.len() && main_timings[end_idx + 1].is_contiguous_with_prev {
+                    end_idx += 1;
+                }
+
+                let mut acc_dur_ms = first.dur_ms;
+                let mut acc_label = format!("v{}", idx);
+
+                if first.intro_dur_ms > 0 {
+                    if let Some(tr) = resolved_main[idx].0.transition_in.as_ref() {
+                        let intro_sec = first.intro_dur_ms as f64 / 1000.0;
+                        let bg_lbl = format!("g_ibg_{}", idx);
+                        let next_lbl = format!("g_vin_{}", idx);
+                        let hex = clean_hex_color(
+                            tr.color.as_deref(),
+                            if tr.kind == "fadewhite" { "0xFFFFFF" } else { "0x000000" },
+                        );
+                        filter_complex.push_str(&format!(
+                            "color=c={}:s={}x{}:r={}:d={:.3},format=yuv420p[{}];",
+                            hex, canvas_w, canvas_h, target_fps, intro_sec, bg_lbl
+                        ));
+                        let spec = build_xfade_filter_spec(tr, intro_sec, 0.0);
+                        filter_complex.push_str(&format!(
+                            "[{}][{}]{}[{}];",
+                            bg_lbl, acc_label, spec, next_lbl
+                        ));
+                        acc_label = next_lbl;
+                    }
+                }
+
+                for k in (idx + 1)..=end_idx {
+                    let item = &main_timings[k];
+                    let curr_lbl = format!("v{}", k);
+                    if item.overlap_in_ms > 0 {
+                        if let Some(tr) = resolved_main[k].0.transition_in.as_ref() {
+                            stage_counter += 1;
+                            let next_lbl = format!("g_vx_{}", stage_counter);
+                            let ctx = TransitionStageCtx {
+                                tr,
+                                acc_dur_ms,
+                                overlap_ms: item.overlap_in_ms,
+                                canvas_w,
+                                canvas_h,
+                                target_fps,
+                                stage_id: stage_counter,
+                            };
+                            append_video_transition_stage(
+                                &mut filter_complex,
+                                &acc_label,
+                                &curr_lbl,
+                                &next_lbl,
+                                &ctx,
+                            );
+                            acc_label = next_lbl;
+                            acc_dur_ms = acc_dur_ms + item.dur_ms - item.overlap_in_ms;
+                        }
+                    } else {
+                        stage_counter += 1;
+                        let next_lbl = format!("g_vc_{}", stage_counter);
+                        filter_complex.push_str(&format!(
+                            "[{}][{}]concat=n=2:v=1:a=0[{}];",
+                            acc_label, curr_lbl, next_lbl
+                        ));
+                        acc_label = next_lbl;
+                        acc_dur_ms += item.dur_ms;
+                    }
+                }
+
+                let last = &main_timings[end_idx];
+                if last.outro_dur_ms > 0 {
+                    if let Some(tr) = resolved_main[end_idx].0.transition_out.as_ref() {
+                        let outro_sec = last.outro_dur_ms as f64 / 1000.0;
+                        let offset_sec = acc_dur_ms.saturating_sub(last.outro_dur_ms) as f64 / 1000.0;
+                        let bg_lbl = format!("g_obg_{}", end_idx);
+                        let next_lbl = format!("g_vout_{}", end_idx);
+                        let hex = clean_hex_color(
+                            tr.color.as_deref(),
+                            if tr.kind == "fadewhite" { "0xFFFFFF" } else { "0x000000" },
+                        );
+                        filter_complex.push_str(&format!(
+                            "color=c={}:s={}x{}:r={}:d={:.3},format=yuv420p[{}];",
+                            hex, canvas_w, canvas_h, target_fps, outro_sec, bg_lbl
+                        ));
+                        let spec = build_xfade_filter_spec(tr, outro_sec, offset_sec);
+                        filter_complex.push_str(&format!(
+                            "[{}][{}]{}[{}];",
+                            acc_label, bg_lbl, spec, next_lbl
+                        ));
+                        acc_label = next_lbl;
+                    }
+                }
+
+                concat_inputs.push_str(&format!("[{}]", acc_label));
+                total_segments += 1;
+                current_timeline_ms += acc_dur_ms;
+                idx = end_idx + 1;
+            }
+
+            if current_timeline_ms < total_timeline_ms {
+                let tail_sec = (total_timeline_ms - current_timeline_ms) as f64 / 1000.0;
+                filter_complex.push_str(&format!(
+                    "color=c=black:s={}x{}:d={:.3}:r={},format=yuv420p[gv_tail];",
+                    canvas_w, canvas_h, tail_sec, target_fps
+                ));
+                concat_inputs.push_str("[gv_tail]");
+                total_segments += 1;
+            }
+
+            filter_complex.push_str(&format!(
+                "{}concat=n={}:v=1:a=0[{}];",
+                concat_inputs, total_segments, base_v_label
             ));
         } else {
             let mut concat_inputs = String::new();
@@ -1399,17 +2545,37 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
         let effective_dur_sec = dur_sec / speed;
 
         if source.is_image {
+            let img_adj = clip.resolved_adjustments();
+            let (img_adj_filters, img_needs_alpha_split) = if img_adj.is_active() {
+                build_video_adjustments_filters(&img_adj, canvas_w, canvas_h, true)
+            } else {
+                (Vec::new(), false)
+            };
+            let img_alpha_op = if img_adj.opacity < 99.9 {
+                format!(",colorchannelmixer=aa={:.3}", (img_adj.opacity / 100.0).clamp(0.0, 1.0))
+            } else {
+                String::new()
+            };
             let v_filter = build_clip_video_filter_internal(
                 clip,
                 source,
                 job,
                 Some((canvas_w, canvas_h)),
                 false,
+                !img_needs_alpha_split,
             );
-            filter_complex.push_str(&format!(
-                "color=c={}:s={}x{}:r={}:d={:.3}[bg_{}];[{}:v]format=rgba,{}[fg_{}];[bg_{}][fg_{}]overlay=x=0:y=0:eof_action=repeat:shortest=1,format=yuv420p[v{}];",
-                clean_color, canvas_w, canvas_h, target_fps, effective_dur_sec, i, i, v_filter, i, i, i, i
-            ));
+            if img_needs_alpha_split {
+                let adj_str = img_adj_filters.join(",");
+                filter_complex.push_str(&format!(
+                    "color=c={}:s={}x{}:r={}:d={:.3}[bg_{}];[{}:v]format=rgba,{}[fg_raw_{}];[fg_raw_{}]split[fg_c_{}][fg_a_{}];[fg_a_{}]alphaextract[fg_al_{}];[fg_c_{}]{},format=yuv444p[fg_cf_{}];[fg_cf_{}][fg_al_{}]alphamerge,format=rgba{}[fg_{}];[bg_{}][fg_{}]overlay=x=0:y=0:eof_action=repeat:shortest=1,format=yuv420p[v{}];",
+                    clean_color, canvas_w, canvas_h, target_fps, effective_dur_sec, i, i, v_filter, i, i, i, i, i, i, i, adj_str, i, i, i, img_alpha_op, i, i, i, i
+                ));
+            } else {
+                filter_complex.push_str(&format!(
+                    "color=c={}:s={}x{}:r={}:d={:.3}[bg_{}];[{}:v]format=rgba,{}{}[fg_{}];[bg_{}][fg_{}]overlay=x=0:y=0:eof_action=repeat:shortest=1,format=yuv420p[v{}];",
+                    clean_color, canvas_w, canvas_h, target_fps, effective_dur_sec, i, i, v_filter, img_alpha_op, i, i, i, i
+                ));
+            }
         } else {
             let v_trim = if is_mpeg_ts_path(&source.path) {
                 format!(
@@ -1426,8 +2592,9 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
                 job,
                 forced_canvas_opt,
                 true,
+                true,
             );
-            let norm_suffix = if has_any_image {
+            let norm_suffix = if has_any_image || has_main_transitions {
                 format!(",fps={},format=yuv420p", target_fps)
             } else {
                 String::new()
@@ -1479,7 +2646,7 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
     let has_overlay_audio_mix = !ov_audio_labels.is_empty();
     let base_v_label = if has_overlays { "base_v" } else { "outv" };
 
-    // Concat main track segments with gap & tail handling
+    // Concat main track segments with gap & tail handling (or transition xfade + acrossfade)
     if resolved_main.is_empty() {
         let total_sec = total_timeline_ms as f64 / 1000.0;
         filter_complex.push_str(&format!(
@@ -1499,6 +2666,244 @@ pub fn build_export_arguments(job: &ExportJob) -> Result<Vec<String>, String> {
             filter_complex.push_str(&format!(
                 "anullsrc=r=48000:cl=stereo:d={:.3}[{}];",
                 total_sec, base_a_label
+            ));
+        }
+    } else if has_main_transitions {
+        if include_audio_in_graph {
+            for i in 0..resolved_main.len() {
+                filter_complex.push_str(&format!(
+                    "[a{}]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[an_{}];",
+                    i, i
+                ));
+            }
+        }
+
+        let mut concat_inputs = String::new();
+        let mut total_segments = 0usize;
+        let mut current_timeline_ms: u64 = 0;
+        let mut stage_counter: usize = 0;
+        let mut idx = 0usize;
+
+        while idx < main_timings.len() {
+            let first = &main_timings[idx];
+            if first.gap_before_ms > 0 {
+                let gap_sec = first.gap_before_ms as f64 / 1000.0;
+                filter_complex.push_str(&format!(
+                    "color=c=black:s={}x{}:d={:.3}:r={},format=yuv420p[gv_{}];",
+                    canvas_w, canvas_h, gap_sec, target_fps, idx
+                ));
+                if include_audio_in_graph {
+                    filter_complex.push_str(&format!(
+                        "anullsrc=r=48000:cl=stereo:d={:.3}[ga_{}];",
+                        gap_sec, idx
+                    ));
+                    concat_inputs.push_str(&format!("[gv_{}][ga_{}]", idx, idx));
+                } else {
+                    concat_inputs.push_str(&format!("[gv_{}]", idx));
+                }
+                total_segments += 1;
+                current_timeline_ms += first.gap_before_ms;
+            }
+
+            let mut end_idx = idx;
+            while end_idx + 1 < main_timings.len() && main_timings[end_idx + 1].is_contiguous_with_prev {
+                end_idx += 1;
+            }
+
+            let mut acc_dur_ms = first.dur_ms;
+            let mut acc_v = format!("v{}", idx);
+            let mut acc_a = format!("an_{}", idx);
+
+            if first.intro_dur_ms > 0 {
+                if let Some(tr) = resolved_main[idx].0.transition_in.as_ref() {
+                    let intro_sec = first.intro_dur_ms as f64 / 1000.0;
+                    let bg_lbl = format!("ibg_{}", idx);
+                    let next_v = format!("vin_{}", idx);
+                    let hex = clean_hex_color(
+                        tr.color.as_deref(),
+                        if tr.kind == "fadewhite" { "0xFFFFFF" } else { "0x000000" },
+                    );
+                    filter_complex.push_str(&format!(
+                        "color=c={}:s={}x{}:r={}:d={:.3},format=yuv420p[{}];",
+                        hex, canvas_w, canvas_h, target_fps, intro_sec, bg_lbl
+                    ));
+                    let spec = build_xfade_filter_spec(tr, intro_sec, 0.0);
+                    filter_complex.push_str(&format!(
+                        "[{}][{}]{}[{}];",
+                        bg_lbl, acc_v, spec, next_v
+                    ));
+                    acc_v = next_v;
+
+                    if include_audio_in_graph {
+                        let next_a = format!("ain_{}", idx);
+                        filter_complex.push_str(&format!(
+                            "[{}]afade=t=in:st=0:d={:.3}[{}];",
+                            acc_a, intro_sec, next_a
+                        ));
+                        acc_a = next_a;
+                    }
+                }
+            }
+
+            for k in (idx + 1)..=end_idx {
+                let item = &main_timings[k];
+                let curr_v = format!("v{}", k);
+                let curr_a = format!("an_{}", k);
+
+                if item.overlap_in_ms > 0 {
+                    if let Some(tr) = resolved_main[k].0.transition_in.as_ref() {
+                        stage_counter += 1;
+                        let next_v = format!("vx_{}", stage_counter);
+                        let ctx = TransitionStageCtx {
+                            tr,
+                            acc_dur_ms,
+                            overlap_ms: item.overlap_in_ms,
+                            canvas_w,
+                            canvas_h,
+                            target_fps,
+                            stage_id: stage_counter,
+                        };
+                        append_video_transition_stage(
+                            &mut filter_complex,
+                            &acc_v,
+                            &curr_v,
+                            &next_v,
+                            &ctx,
+                        );
+                        acc_v = next_v;
+
+                        if include_audio_in_graph {
+                            let next_a = format!("ax_{}", stage_counter);
+                            append_audio_transition_stage(
+                                &mut filter_complex,
+                                &acc_a,
+                                &curr_a,
+                                &next_a,
+                                &ctx,
+                            );
+                            acc_a = next_a;
+                        }
+
+                        acc_dur_ms = acc_dur_ms + item.dur_ms - item.overlap_in_ms;
+                    }
+                } else {
+                    stage_counter += 1;
+                    let next_v = format!("vc_{}", stage_counter);
+                    filter_complex.push_str(&format!(
+                        "[{}][{}]concat=n=2:v=1:a=0[{}];",
+                        acc_v, curr_v, next_v
+                    ));
+                    acc_v = next_v;
+
+                    if include_audio_in_graph {
+                        let next_a = format!("ac_{}", stage_counter);
+                        filter_complex.push_str(&format!(
+                            "[{}][{}]concat=n=2:v=0:a=1[{}];",
+                            acc_a, curr_a, next_a
+                        ));
+                        acc_a = next_a;
+                    }
+
+                    acc_dur_ms += item.dur_ms;
+                }
+            }
+
+            let last = &main_timings[end_idx];
+            if last.outro_dur_ms > 0 {
+                if let Some(tr) = resolved_main[end_idx].0.transition_out.as_ref() {
+                    let outro_sec = last.outro_dur_ms as f64 / 1000.0;
+                    let offset_sec = acc_dur_ms.saturating_sub(last.outro_dur_ms) as f64 / 1000.0;
+                    let bg_lbl = format!("obg_{}", end_idx);
+                    let next_v = format!("vout_{}", end_idx);
+                    let hex = clean_hex_color(
+                        tr.color.as_deref(),
+                        if tr.kind == "fadewhite" { "0xFFFFFF" } else { "0x000000" },
+                    );
+                    filter_complex.push_str(&format!(
+                        "color=c={}:s={}x{}:r={}:d={:.3},format=yuv420p[{}];",
+                        hex, canvas_w, canvas_h, target_fps, outro_sec, bg_lbl
+                    ));
+                    let spec = build_xfade_filter_spec(tr, outro_sec, offset_sec);
+                    filter_complex.push_str(&format!(
+                        "[{}][{}]{}[{}];",
+                        acc_v, bg_lbl, spec, next_v
+                    ));
+                    acc_v = next_v;
+
+                    if include_audio_in_graph {
+                        let next_a = format!("aout_{}", end_idx);
+                        filter_complex.push_str(&format!(
+                            "[{}]afade=t=out:st={:.3}:d={:.3}[{}];",
+                            acc_a, offset_sec, outro_sec, next_a
+                        ));
+                        acc_a = next_a;
+                    }
+                }
+            }
+
+            if include_audio_in_graph {
+                concat_inputs.push_str(&format!("[{}][{}]", acc_v, acc_a));
+            } else {
+                concat_inputs.push_str(&format!("[{}]", acc_v));
+            }
+            total_segments += 1;
+            current_timeline_ms += acc_dur_ms;
+            idx = end_idx + 1;
+        }
+
+        if current_timeline_ms < total_timeline_ms {
+            let tail_sec = (total_timeline_ms - current_timeline_ms) as f64 / 1000.0;
+            filter_complex.push_str(&format!(
+                "color=c=black:s={}x{}:d={:.3}:r={},format=yuv420p[gv_tail];",
+                canvas_w, canvas_h, tail_sec, target_fps
+            ));
+            if include_audio_in_graph {
+                filter_complex.push_str(&format!(
+                    "anullsrc=r=48000:cl=stereo:d={:.3}[ga_tail];",
+                    tail_sec
+                ));
+                concat_inputs.push_str("[gv_tail][ga_tail]");
+            } else {
+                concat_inputs.push_str("[gv_tail]");
+            }
+            total_segments += 1;
+        }
+
+        if include_audio_in_graph {
+            if has_overlay_audio_mix {
+                filter_complex.push_str(&format!(
+                    "{}concat=n={}:v=1:a=1[{}][base_a];",
+                    concat_inputs, total_segments, base_v_label
+                ));
+            } else if is_both && has_video_audio {
+                filter_complex.push_str(&format!(
+                    "{}concat=n={}:v=1:a=1[{}][outa_mix];[outa_mix]asplit=2[outa][outa_stand];",
+                    concat_inputs, total_segments, base_v_label
+                ));
+            } else if is_both {
+                filter_complex.push_str(&format!(
+                    "{}concat=n={}:v=1:a=1[{}][outa_stand]{}",
+                    concat_inputs,
+                    total_segments,
+                    base_v_label,
+                    if has_overlays { ";" } else { "" }
+                ));
+            } else {
+                filter_complex.push_str(&format!(
+                    "{}concat=n={}:v=1:a=1[{}][outa]{}",
+                    concat_inputs,
+                    total_segments,
+                    base_v_label,
+                    if has_overlays { ";" } else { "" }
+                ));
+            }
+        } else {
+            filter_complex.push_str(&format!(
+                "{}concat=n={}:v=1:a=0[{}]{}",
+                concat_inputs,
+                total_segments,
+                base_v_label,
+                if has_overlays { ";" } else { "" }
             ));
         }
     } else {
@@ -1717,6 +3122,8 @@ mod tests {
                 codec: Some("h264".into()),
                 audio_codec: Some("aac".into()),
                 is_image: false,
+                fps_num: None,
+                fps_den: None,
             },
             ExportSource {
                 id: "src2".into(),
@@ -1728,6 +3135,8 @@ mod tests {
                 codec: Some("h264".into()),
                 audio_codec: Some("aac".into()),
                 is_image: false,
+                fps_num: None,
+                fps_den: None,
             },
         ];
 
@@ -1743,9 +3152,14 @@ mod tests {
             volume_db: 0.0,
             speed: 1.0,
             sharpness: 0.0,
+            video_adjustments: None,
             start_ms: None,
             track_index: 0,
             overlay_bounds: None,
+            canvas_bounds: None,
+            crop: None,
+            transition_in: None,
+            transition_out: None,
         }];
 
         if !is_single_clip {
@@ -1761,9 +3175,14 @@ mod tests {
                 volume_db: 0.0,
                 speed: 1.0,
                 sharpness: 0.0,
+                video_adjustments: None,
                 start_ms: None,
                 track_index: 0,
                 overlay_bounds: None,
+                canvas_bounds: None,
+                crop: None,
+                transition_in: None,
+                transition_out: None,
             });
         }
 
@@ -2163,6 +3582,8 @@ mod tests {
             codec: Some("png".into()),
             audio_codec: None,
             is_image: true,
+            fps_num: None,
+            fps_den: None,
         });
 
         // V2: PNG overlay from 1s..4s
@@ -2178,6 +3599,7 @@ mod tests {
             volume_db: 0.0,
             speed: 1.0,
             sharpness: 0.0,
+            video_adjustments: None,
             start_ms: Some(1000),
             track_index: 1,
             overlay_bounds: Some(ExportCrop {
@@ -2186,6 +3608,10 @@ mod tests {
                 width: 0.25,
                 height: 0.25,
             }),
+            canvas_bounds: None,
+            crop: None,
+            transition_in: None,
+            transition_out: None,
         });
 
         // V3: PiP video overlay from 2s..6s with audio
@@ -2201,6 +3627,7 @@ mod tests {
             volume_db: -3.0,
             speed: 1.0,
             sharpness: 0.0,
+            video_adjustments: None,
             start_ms: Some(2000),
             track_index: 2,
             overlay_bounds: Some(ExportCrop {
@@ -2209,6 +3636,10 @@ mod tests {
                 width: 0.3,
                 height: 0.3,
             }),
+            canvas_bounds: None,
+            crop: None,
+            transition_in: None,
+            transition_out: None,
         });
 
         let args = build_export_arguments(&job).expect("Failed to build multi-track args");
@@ -2332,6 +3763,8 @@ mod tests {
                 codec: Some("h264".into()),
                 audio_codec: Some("aac".into()),
                 is_image: false,
+                fps_num: None,
+                fps_den: None,
             },
             ExportSource {
                 id: "png".into(),
@@ -2343,6 +3776,8 @@ mod tests {
                 codec: Some("png".into()),
                 audio_codec: None,
                 is_image: true,
+                fps_num: None,
+                fps_den: None,
             },
             ExportSource {
                 id: "pip".into(),
@@ -2354,6 +3789,8 @@ mod tests {
                 codec: Some("h264".into()),
                 audio_codec: Some("aac".into()),
                 is_image: false,
+                fps_num: None,
+                fps_den: None,
             },
         ];
         // V1: bg (0..2s), V2: PNG sticker (0.3s..1.8s), V3: PiP video extending past bg (1.5s..2.5s -> total 2.5s!)
@@ -2370,9 +3807,14 @@ mod tests {
                 volume_db: 0.0,
                 speed: 1.0,
                 sharpness: 0.0,
+                video_adjustments: None,
                 start_ms: Some(0),
                 track_index: 0,
                 overlay_bounds: None,
+                canvas_bounds: None,
+                crop: None,
+                transition_in: None,
+                transition_out: None,
             },
             ExportClip {
                 id: "c_png".into(),
@@ -2386,6 +3828,7 @@ mod tests {
                 volume_db: 0.0,
                 speed: 1.0,
                 sharpness: 0.0,
+                video_adjustments: None,
                 start_ms: Some(300),
                 track_index: 1,
                 overlay_bounds: Some(ExportCrop {
@@ -2394,6 +3837,10 @@ mod tests {
                     width: 0.35,
                     height: 0.4,
                 }),
+                canvas_bounds: None,
+                crop: None,
+                transition_in: None,
+                transition_out: None,
             },
             ExportClip {
                 id: "c_pip".into(),
@@ -2407,6 +3854,7 @@ mod tests {
                 volume_db: 0.0,
                 speed: 1.0,
                 sharpness: 0.0,
+                video_adjustments: None,
                 start_ms: Some(1500),
                 track_index: 2,
                 overlay_bounds: Some(ExportCrop {
@@ -2415,6 +3863,10 @@ mod tests {
                     width: 0.4,
                     height: 0.4,
                 }),
+                canvas_bounds: None,
+                crop: None,
+                transition_in: None,
+                transition_out: None,
             },
         ];
         job.output.output_path = out_mp4.to_string_lossy().to_string();
@@ -2506,6 +3958,8 @@ mod tests {
             codec: Some("h264".into()),
             audio_codec: Some("aac".into()),
             is_image: false,
+            fps_num: None,
+            fps_den: None,
         }];
         job_start.clips[0].in_ms = 5000;
         job_start.clips[0].out_ms = 15000;
@@ -2573,6 +4027,528 @@ mod tests {
             "Expected ~5000ms for 0s..5s trim, got {}ms",
             probe3.duration_ms
         );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_single_clip_intro_outro_transition_disables_copy_and_builds_xfade() {
+        let mut job = make_test_job("mp4_h264", true);
+        job.clips[0].in_ms = 0;
+        job.clips[0].out_ms = 10000;
+        job.clips[0].transition_in = Some(ExportTransition {
+            kind: "fadeblack".into(),
+            duration_ms: 800,
+            direction: None,
+            easing: Some("smooth".into()),
+            softness: None,
+            color: Some("#000000".into()),
+            audio_mode: None,
+        });
+        job.clips[0].transition_out = Some(ExportTransition {
+            kind: "fadewhite".into(),
+            duration_ms: 600,
+            direction: None,
+            easing: Some("smooth".into()),
+            softness: None,
+            color: Some("#FFFFFF".into()),
+            audio_mode: None,
+        });
+
+        let args = build_export_arguments(&job).expect("Failed to build intro/outro args");
+        assert!(!args.contains(&"copy".to_string()));
+        let fc_idx = args.iter().position(|a| a == "-filter_complex").unwrap();
+        let fc = &args[fc_idx + 1];
+        assert!(fc.contains("xfade=transition=fadeblack:duration=0.800:offset=0.000"), "got: {}", fc);
+        assert!(fc.contains("xfade=transition=fadewhite:duration=0.600:offset=9.400"), "got: {}", fc);
+        assert!(fc.contains("afade=t=in:st=0:d=0.800"), "got: {}", fc);
+        assert!(fc.contains("afade=t=out:st=9.400:d=0.600"), "got: {}", fc);
+    }
+
+    #[test]
+    fn test_multi_clip_xfade_acrossfade_and_custom_expr_generation() {
+        let mut job = make_test_job("mp4_h264", false);
+        job.clips[1].transition_in = Some(ExportTransition {
+            kind: "wipe".into(),
+            duration_ms: 1000,
+            direction: Some("left".into()),
+            easing: Some("smooth".into()),
+            softness: Some(0.25),
+            color: None,
+            audio_mode: Some("crossfade".into()),
+        });
+
+        let args = build_export_arguments(&job).expect("Failed to build xfade wipe args");
+        let fc_idx = args.iter().position(|a| a == "-filter_complex").unwrap();
+        let fc = &args[fc_idx + 1];
+        // Clip 1 is 5.0s, overlap is 1.0s => offset = 4.000
+        assert!(fc.contains("xfade=transition=custom:duration=1.000:offset=4.000:expr='"), "got: {}", fc);
+        assert!(fc.contains("acrossfade=d=1.000:c1=qsin:c2=qsin"), "got: {}", fc);
+    }
+
+    #[test]
+    fn test_end_to_end_ffmpeg_transitions_mixed_fps_and_av_sync() {
+        use crate::ffmpeg::sidecar::create_ffmpeg_command;
+        use crate::media::probe::probe_media_file;
+
+        let check = create_ffmpeg_command(["-version"]).output();
+        if !matches!(check, Ok(o) if o.status.success()) {
+            return;
+        }
+
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "megufastcut-transitions-e2e-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let vid_a = tmp_dir.join("clip_30fps.mp4");
+        let vid_b = tmp_dir.join("clip_60fps.mp4");
+        let vid_c = tmp_dir.join("clip_24fps.mp4");
+        let out_mp4 = tmp_dir.join("out_transitions.mp4");
+
+        // 1. 3.0s 30fps @ 44.1kHz
+        assert!(create_ffmpeg_command([
+            "-y",
+            "-f", "lavfi", "-i", "testsrc=duration=3:size=320x180:rate=30",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=3",
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+            &vid_a.to_string_lossy(),
+        ]).output().unwrap().status.success());
+
+        // 2. 3.0s 60fps @ 48kHz
+        assert!(create_ffmpeg_command([
+            "-y",
+            "-f", "lavfi", "-i", "testsrc2=duration=3:size=320x180:rate=60",
+            "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=3",
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+            &vid_b.to_string_lossy(),
+        ]).output().unwrap().status.success());
+
+        // 3. 3.0s 24fps @ 48kHz
+        assert!(create_ffmpeg_command([
+            "-y",
+            "-f", "lavfi", "-i", "color=c=navy:duration=3:size=320x180:rate=24",
+            "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=3",
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+            &vid_c.to_string_lossy(),
+        ]).output().unwrap().status.success());
+
+        let mut job = make_test_job("mp4_h264", true);
+        job.sources = vec![
+            ExportSource {
+                id: "sa".into(),
+                path: vid_a.to_string_lossy().to_string(),
+                filename: "clip_30fps.mp4".into(),
+                duration_ms: 3000,
+                width: Some(320),
+                height: Some(180),
+                fps_num: Some(30),
+                fps_den: Some(1),
+                codec: Some("h264".into()),
+                audio_codec: Some("aac".into()),
+                is_image: false,
+            },
+            ExportSource {
+                id: "sb".into(),
+                path: vid_b.to_string_lossy().to_string(),
+                filename: "clip_60fps.mp4".into(),
+                duration_ms: 3000,
+                width: Some(320),
+                height: Some(180),
+                fps_num: Some(60),
+                fps_den: Some(1),
+                codec: Some("h264".into()),
+                audio_codec: Some("aac".into()),
+                is_image: false,
+            },
+            ExportSource {
+                id: "sc".into(),
+                path: vid_c.to_string_lossy().to_string(),
+                filename: "clip_24fps.mp4".into(),
+                duration_ms: 3000,
+                width: Some(320),
+                height: Some(180),
+                fps_num: Some(24),
+                fps_den: Some(1),
+                codec: Some("h264".into()),
+                audio_codec: Some("aac".into()),
+                is_image: false,
+            },
+        ];
+
+        // Total duration: 3000 + 3000 + 3000 - 600 (fadeblack) - 800 (feathered circle) = 7600ms
+        job.clips = vec![
+            ExportClip {
+                id: "ca".into(),
+                source_id: "sa".into(),
+                in_ms: 0,
+                out_ms: 3000,
+                enabled: true,
+                rotate: 0,
+                flip_h: false,
+                flip_v: false,
+                volume_db: 0.0,
+                speed: 1.0,
+                sharpness: 0.0,
+                video_adjustments: None,
+                start_ms: None,
+                track_index: 0,
+                overlay_bounds: None,
+                canvas_bounds: None,
+                crop: None,
+                transition_in: Some(ExportTransition {
+                    kind: "fadeblack".into(),
+                    duration_ms: 500,
+                    direction: None,
+                    easing: Some("smooth".into()),
+                    softness: None,
+                    color: Some("#000000".into()),
+                    audio_mode: None,
+                }),
+                transition_out: None,
+            },
+            ExportClip {
+                id: "cb".into(),
+                source_id: "sb".into(),
+                in_ms: 0,
+                out_ms: 3000,
+                enabled: true,
+                rotate: 0,
+                flip_h: false,
+                flip_v: false,
+                volume_db: 0.0,
+                speed: 1.0,
+                sharpness: 0.0,
+                video_adjustments: None,
+                start_ms: None,
+                track_index: 0,
+                overlay_bounds: None,
+                canvas_bounds: None,
+                crop: None,
+                transition_in: Some(ExportTransition {
+                    kind: "dipcolor".into(),
+                    duration_ms: 600,
+                    direction: None,
+                    easing: Some("smooth".into()),
+                    softness: None,
+                    color: Some("#EB5E28".into()),
+                    audio_mode: Some("dip".into()),
+                }),
+                transition_out: None,
+            },
+            ExportClip {
+                id: "cc".into(),
+                source_id: "sc".into(),
+                in_ms: 0,
+                out_ms: 3000,
+                enabled: true,
+                rotate: 0,
+                flip_h: false,
+                flip_v: false,
+                volume_db: 0.0,
+                speed: 1.0,
+                sharpness: 0.0,
+                video_adjustments: None,
+                start_ms: None,
+                track_index: 0,
+                overlay_bounds: None,
+                canvas_bounds: None,
+                crop: None,
+                transition_in: Some(ExportTransition {
+                    kind: "circle".into(),
+                    duration_ms: 800,
+                    direction: Some("open".into()),
+                    easing: Some("sharp".into()),
+                    softness: Some(0.3),
+                    color: None,
+                    audio_mode: Some("crossfade".into()),
+                }),
+                transition_out: Some(ExportTransition {
+                    kind: "fadeblack".into(),
+                    duration_ms: 500,
+                    direction: None,
+                    easing: Some("smooth".into()),
+                    softness: None,
+                    color: Some("#000000".into()),
+                    audio_mode: None,
+                }),
+            },
+        ];
+
+        job.output.output_path = out_mp4.to_string_lossy().to_string();
+        job.total_duration_ms = 7600;
+
+        let args = build_export_arguments(&job).expect("Failed to build transition export args");
+        let res = create_ffmpeg_command(&args)
+            .output()
+            .expect("Failed to run ffmpeg");
+        assert!(
+            res.status.success(),
+            "Transition FFmpeg export failed: {}",
+            String::from_utf8_lossy(&res.stderr)
+        );
+
+        let probed = probe_media_file(&job.output.output_path).expect("Failed to probe output");
+        assert_eq!(probed.video.as_ref().map(|v| (v.width, v.height)), Some((320, 180)));
+        assert!(
+            (probed.duration_ms as i64 - 7600).abs() <= 150,
+            "Expected ~7600ms output duration, got {}ms",
+            probed.duration_ms
+        );
+        let v_dur = probed.video.as_ref().map(|v| v.duration_ms).unwrap_or(0);
+        assert!(
+            (probed.duration_ms as i64 - v_dur as i64).abs() <= 100,
+            "Audio/Video duration drift exceeded 100ms: container={}ms, video={}ms",
+            probed.duration_ms,
+            v_dur
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_per_clip_canvas_bounds_scales_only_target_clip() {
+        let mut job = make_test_job("mp4_h264", false);
+        job.fit_mode = "fit".into();
+        job.clips[0].canvas_bounds = Some(ExportCrop {
+            x: 0.25,
+            y: 0.25,
+            width: 0.5,
+            height: 0.5,
+        });
+        job.clips[1].canvas_bounds = None;
+
+        let args = build_export_arguments(&job).expect("Failed to build per-clip bounds args");
+        let fc_idx = args.iter().position(|a| a == "-filter_complex").unwrap();
+        let fc = &args[fc_idx + 1];
+
+        assert!(
+            fc.contains("scale=w=960:h=540,pad=w=1920:h=1080:x=480:y=270:color=black,setsar=1[v0]"),
+            "Expected clip 0 scaled to 960x540, got: {}",
+            fc
+        );
+        assert!(
+            fc.contains("scale=w=1920:h=1080,setsar=1[v1]"),
+            "Expected clip 1 unscaled at 1920x1080, got: {}",
+            fc
+        );
+    }
+
+    #[test]
+    fn test_default_video_adjustments_keeps_fast_copy() {
+        let mut job = make_test_job("mp4_h264", true);
+        job.clips[0].in_ms = 0;
+        job.clips[0].out_ms = 10000;
+        job.clips[0].video_adjustments = Some(ExportVideoAdjustments::default());
+
+        let args = build_export_arguments(&job).expect("Failed to build default video_adjustments args");
+        assert!(args.contains(&"copy".to_string()));
+        assert!(!args.contains(&"-filter_complex".to_string()));
+    }
+
+    #[test]
+    fn test_all_video_adjustments_generate_expected_single_pass_filters() {
+        let mut job = make_test_job("mp4_h264", true);
+        job.clips[0].in_ms = 0;
+        job.clips[0].out_ms = 10000;
+        job.clips[0].video_adjustments = Some(ExportVideoAdjustments {
+            exposure: 25.0,
+            brightness: 10.0,
+            contrast: 20.0,
+            highlights: -15.0,
+            shadows: 18.0,
+            whites: 10.0,
+            blacks: -8.0,
+            gamma: 12.0,
+            temperature: 30.0,
+            tint: -15.0,
+            saturation: 25.0,
+            vibrance: 35.0,
+            hue: 15.0,
+            sharpness: 45.0,
+            clarity: 30.0,
+            denoise: 40.0,
+            deband: 50.0,
+            fade: 15.0,
+            vignette: 35.0,
+            grain: 20.0,
+            blur: 10.0,
+            aberration: 50.0,
+            opacity: 80.0,
+        });
+
+        let args = build_export_arguments(&job).expect("Failed to build full video_adjustments args");
+        assert!(!args.contains(&"copy".to_string()));
+        let fc_idx = args.iter().position(|a| a == "-filter_complex").unwrap();
+        let fc = &args[fc_idx + 1];
+
+        assert!(fc.contains("rgbashift=rh=-3:bh=3:edge=smear"), "missing aberration: {}", fc);
+        assert!(fc.contains("colorchannelmixer=rr="), "missing 3x3 color matrix: {}", fc);
+        assert!(fc.contains("vibrance=intensity=0.385"), "missing vibrance: {}", fc);
+        assert!(fc.contains("curves=interp=pchip:m='"), "missing tone curve: {}", fc);
+        assert!(fc.contains("hqdn3d=luma_spatial=2.40"), "missing denoise: {}", fc);
+        assert!(fc.contains("deband=1thr=0.0240"), "missing deband: {}", fc);
+        assert!(fc.contains("unsharp=lx=13:ly=13:la=0.330"), "missing clarity: {}", fc);
+        assert!(fc.contains("cas=strength=0.45"), "missing cas: {}", fc);
+        assert!(fc.contains("gblur=sigma=1.80:steps=2"), "missing blur: {}", fc);
+        assert!(fc.contains("vignette=angle=0.2830:mode=forward"), "missing vignette: {}", fc);
+        assert!(fc.contains("noise=c0s=6:c0f=t+u"), "missing grain: {}", fc);
+        assert!(fc.contains("curves=r='0/0.0000 1/0.8000'"), "missing V1 opacity blend: {}", fc);
+    }
+
+    #[test]
+    fn test_fit_mode_applies_video_adjustments_before_pad() {
+        let mut job = make_test_job("mp4_h264", true);
+        job.fit_mode = "fit".into();
+        job.aspect = ExportAspect {
+            id: "9:16".into(),
+            ratio: Some(9.0 / 16.0),
+            custom_w: None,
+            custom_h: None,
+        };
+        job.clips[0].video_adjustments = Some(ExportVideoAdjustments {
+            vignette: 40.0,
+            fade: 25.0,
+            ..Default::default()
+        });
+
+        let args = build_export_arguments(&job).expect("Failed to build fit-mode adjustments args");
+        let fc_idx = args.iter().position(|a| a == "-filter_complex").unwrap();
+        let fc = &args[fc_idx + 1];
+        let vig_pos = fc.find("vignette=").expect("expected vignette filter");
+        let pad_pos = fc.find("pad=w=").expect("expected pad filter");
+        assert!(
+            vig_pos < pad_pos,
+            "Video adjustments must run BEFORE pad= so black bars are untouched: {}",
+            fc
+        );
+    }
+
+    #[test]
+    fn test_overlay_preserves_alpha_with_denoise_vignette_and_opacity() {
+        let mut job = make_test_job("mp4_h264", true);
+        job.clips.push(ExportClip {
+            id: "ov1".into(),
+            source_id: "src2".into(),
+            in_ms: 0,
+            out_ms: 4000,
+            enabled: true,
+            rotate: 0,
+            flip_h: false,
+            flip_v: false,
+            volume_db: 0.0,
+            speed: 1.0,
+            sharpness: 0.0,
+            video_adjustments: Some(ExportVideoAdjustments {
+                denoise: 30.0,
+                vignette: 45.0,
+                opacity: 75.0,
+                ..Default::default()
+            }),
+            start_ms: Some(0),
+            track_index: 1,
+            overlay_bounds: Some(ExportCrop {
+                x: 0.1,
+                y: 0.1,
+                width: 0.4,
+                height: 0.4,
+            }),
+            canvas_bounds: None,
+            crop: None,
+            transition_in: None,
+            transition_out: None,
+        });
+
+        let args = build_export_arguments(&job).expect("Failed to build overlay fx args");
+        let fc_idx = args.iter().position(|a| a == "-filter_complex").unwrap();
+        let fc = &args[fc_idx + 1];
+        assert!(fc.contains("alphaextract"), "expected alphaextract: {}", fc);
+        assert!(fc.contains("alphamerge,format=rgba,colorchannelmixer=aa=0.750"), "expected alphamerge + opacity: {}", fc);
+    }
+
+    #[test]
+    fn test_end_to_end_ffmpeg_full_video_adjustments_executes_cleanly() {
+        use crate::ffmpeg::sidecar::create_ffmpeg_command;
+        use crate::media::probe::probe_media_file;
+
+        let check = create_ffmpeg_command(["-version"]).output();
+        if !matches!(check, Ok(o) if o.status.success()) {
+            return;
+        }
+
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "megufastcut-videofx-e2e-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let src_vid = tmp_dir.join("src.mp4");
+        let out_vid = tmp_dir.join("out_fx.mp4");
+
+        assert!(create_ffmpeg_command([
+            "-y",
+            "-f", "lavfi", "-i", "testsrc=duration=1:size=320x180:rate=30",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+            &src_vid.to_string_lossy(),
+        ]).output().unwrap().status.success());
+
+        let mut job = make_test_job("mp4_h264", true);
+        job.sources = vec![ExportSource {
+            id: "src1".into(),
+            path: src_vid.to_string_lossy().to_string(),
+            filename: "src.mp4".into(),
+            duration_ms: 1000,
+            width: Some(320),
+            height: Some(180),
+            codec: Some("h264".into()),
+            audio_codec: Some("aac".into()),
+            is_image: false,
+            fps_num: Some(30),
+            fps_den: Some(1),
+        }];
+        job.clips[0].in_ms = 0;
+        job.clips[0].out_ms = 1000;
+        job.clips[0].video_adjustments = Some(ExportVideoAdjustments {
+            exposure: 20.0,
+            contrast: 25.0,
+            highlights: -15.0,
+            shadows: 20.0,
+            temperature: 25.0,
+            tint: 10.0,
+            saturation: 15.0,
+            vibrance: 30.0,
+            hue: 10.0,
+            sharpness: 50.0,
+            clarity: 25.0,
+            denoise: 30.0,
+            deband: 25.0,
+            fade: 10.0,
+            vignette: 30.0,
+            grain: 15.0,
+            blur: 5.0,
+            aberration: 40.0,
+            opacity: 90.0,
+            ..Default::default()
+        });
+        job.output.output_path = out_vid.to_string_lossy().to_string();
+        job.output.audio_codec = Some("copy".into());
+        job.total_duration_ms = 1000;
+
+        let args = build_export_arguments(&job).expect("Failed to build e2e fx args");
+        assert!(args.contains(&"copy".to_string()), "Audio should still be copied when untouched");
+
+        let res = create_ffmpeg_command(&args).output().expect("Failed to run ffmpeg");
+        assert!(
+            res.status.success(),
+            "Full Video FX FFmpeg export failed: {}",
+            String::from_utf8_lossy(&res.stderr)
+        );
+
+        let probed = probe_media_file(&job.output.output_path).expect("Failed to probe output");
+        assert_eq!(probed.video.as_ref().map(|v| (v.width, v.height)), Some((320, 180)));
+        assert!((probed.duration_ms as i64 - 1000).abs() <= 150);
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }

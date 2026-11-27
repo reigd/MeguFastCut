@@ -6,6 +6,93 @@ export type RotateAngle = 0 | 90 | 180 | 270;
 export type ProcessingMode = 'fast' | 'precise' | 'reencode';
 export type PreviewQuality = 'original' | '1080p' | '720p' | '480p';
 export type MediaKind = 'video' | 'image' | 'audio';
+export type VideoFxCategory = 'all' | 'light' | 'color' | 'detail' | 'effects';
+
+export interface VideoAdjustments {
+  // Light & Tone (8)
+  exposure: number;      // -100..100, default 0
+  brightness: number;    // -100..100, default 0
+  contrast: number;      // -100..100, default 0
+  highlights: number;    // -100..100, default 0
+  shadows: number;       // -100..100, default 0
+  whites: number;        // -100..100, default 0
+  blacks: number;        // -100..100, default 0
+  gamma: number;         // -100..100, default 0
+  // Color & White Balance (5)
+  temperature: number;   // -100..100, default 0 (Cool <-> Warm)
+  tint: number;          // -100..100, default 0 (Green <-> Magenta)
+  saturation: number;    // -100..100, default 0 (-100 = monochrome, +100 = 2x)
+  vibrance: number;      // -100..100, default 0
+  hue: number;           // -180..180, default 0 (degrees)
+  // Detail & Cleanup (4)
+  sharpness: number;     // 0..100, default 0 (mirrors clip.sharpness * 100)
+  clarity: number;       // -100..100, default 0 (local midtone contrast / bloom)
+  denoise: number;       // 0..100, default 0 (3D spatial+temporal hqdn3d)
+  deband: number;        // 0..100, default 0 (gradient banding removal)
+  // Optics & Effects (6)
+  fade: number;          // 0..100, default 0 (matte black-floor lift)
+  vignette: number;      // -100..100, default 0 (>0 dark edges, <0 light edges)
+  grain: number;         // 0..100, default 0 (monochromatic film grain)
+  blur: number;          // 0..100, default 0 (optical Gaussian blur)
+  aberration: number;    // 0..100, default 0 (RGB chromatic lens shift)
+  opacity: number;       // 0..100, default 100 (clip opacity %)
+}
+
+export type TransitionType =
+  | 'none'
+  | 'fade'
+  | 'fadeblack'
+  | 'fadewhite'
+  | 'dipcolor'
+  | 'hblur'
+  | 'fadegrays'
+  | 'dissolve'
+  | 'smooth'
+  | 'slide'
+  | 'cover'
+  | 'reveal'
+  | 'zoomin'
+  | 'wipe'
+  | 'diagwipe'
+  | 'circle'
+  | 'shutter'
+  | 'squeeze'
+  | 'pixelize'
+  | 'slice';
+
+export type TransitionCategory = 'all' | 'light' | 'motion' | 'geometric' | 'creative';
+
+export type TransitionDirection =
+  | 'left'
+  | 'right'
+  | 'up'
+  | 'down'
+  | 'tl'
+  | 'tr'
+  | 'bl'
+  | 'br'
+  | 'open'
+  | 'close'
+  | 'horzopen'
+  | 'horzclose'
+  | 'vertopen'
+  | 'vertclose'
+  | 'horizontal'
+  | 'vertical';
+
+export type TransitionEasing = 'smooth' | 'linear' | 'easeIn' | 'easeOut' | 'sharp';
+
+export type TransitionAudioMode = 'crossfade' | 'dip' | 'cut';
+
+export interface ClipTransition {
+  type: TransitionType;
+  durationMs: number;
+  direction?: TransitionDirection;
+  easing?: TransitionEasing;
+  softness?: number;
+  color?: string;
+  audioMode?: TransitionAudioMode;
+}
 
 export interface CropRect {
   x: number;      // normalized 0..1 or pixel value depending on context
@@ -119,9 +206,14 @@ export interface Clip {
   flipH: boolean;
   flipV: boolean;
   cropOverride?: CropRect;
+  fitBounds?: CropRect | null;
+  stretchBounds?: CropRect | null;
   volumeDb: number;            // 0 default
   speed?: number;              // 0.01..999, default 1.0
   sharpness?: number;          // 0..1 (CAS strength), default 0
+  videoAdjustments?: VideoAdjustments;
+  transitionIn?: ClipTransition | null;
+  transitionOut?: ClipTransition | null;
 }
 
 export interface Project {

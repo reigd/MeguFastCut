@@ -32,7 +32,15 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
   position,
   onClose,
 }) => {
-  const { duplicateClip, removeClip, toggleClipEnabled, moveClipToTrack } = useProjectStore();
+  const {
+    copiedClip,
+    copyClip,
+    pasteClip,
+    duplicateClip,
+    removeClip,
+    toggleClipEnabled,
+    moveClipToTrack,
+  } = useProjectStore();
   const trackIndex = getClipTrackIndex(clip);
 
   useEffect(() => {
@@ -72,6 +80,33 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
       >
         {clip.enabled ? <EyeOffIcon size={14} /> : <EyeIcon size={14} />}
         <span>{clip.enabled ? t('clips.disable_clip') : t('clips.enable_clip')}</span>
+      </button>
+
+      {/* Copy */}
+      <button
+        type="button"
+        className="menu-item"
+        onClick={() => {
+          copyClip(clip.id);
+          onClose();
+        }}
+      >
+        <LayersIcon size={14} />
+        <span>{t('clips.copy')}</span>
+      </button>
+
+      {/* Paste Before */}
+      <button
+        type="button"
+        className="menu-item"
+        disabled={!copiedClip}
+        onClick={() => {
+          pasteClip(clip.id);
+          onClose();
+        }}
+      >
+        <PlusIcon size={14} />
+        <span>{t('clips.paste')}</span>
       </button>
 
       {/* Duplicate */}
@@ -162,11 +197,15 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
           text-align: left;
           transition: background var(--dur-fast) var(--ease-out);
         }
-        .menu-item:hover {
+        .menu-item:hover:not(:disabled) {
           background: var(--bg-inset);
           color: var(--accent);
         }
-        .menu-item.danger:hover {
+        .menu-item:disabled {
+          opacity: 0.45;
+          cursor: default;
+        }
+        .menu-item.danger:hover:not(:disabled) {
           background: var(--accent-muted);
           color: var(--danger);
         }

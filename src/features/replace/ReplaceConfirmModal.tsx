@@ -13,6 +13,7 @@ import {
   finalizeReplace,
 } from '../../shared/ipc';
 import { formatTimecode, t } from '../../shared/i18n';
+import { getTimelineTotalDurationMs } from '../../shared/media-formats';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -34,10 +35,7 @@ export const ReplaceConfirmModal: React.FC = () => {
 
   const source = sources[0];
   const enabledClips = project.clips.filter((c) => c.enabled);
-  const newDurationMs = enabledClips.reduce(
-    (sum, c) => sum + Math.round((c.outMs - c.inMs) / (c.speed || 1.0)),
-    0
-  );
+  const newDurationMs = getTimelineTotalDurationMs(enabledClips);
   const origDurationMs = source?.probe.durationMs || 0;
   const origSizeBytes = source?.probe.sizeBytes || 0;
 

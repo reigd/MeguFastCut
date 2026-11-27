@@ -1,3 +1,21 @@
+import {
+  TransitionAudioMode,
+  TransitionDirection,
+  TransitionEasing,
+  TransitionType,
+  VideoAdjustments,
+} from '../../shared/types';
+
+export interface ExportTransition {
+  type: TransitionType;
+  durationMs: number;
+  direction?: TransitionDirection;
+  easing?: TransitionEasing;
+  softness?: number;
+  color?: string;
+  audioMode?: TransitionAudioMode;
+}
+
 export interface ExportSource {
   id: string;
   path: string;
@@ -5,6 +23,8 @@ export interface ExportSource {
   durationMs: number;
   width?: number;
   height?: number;
+  fpsNum?: number;
+  fpsDen?: number;
   codec?: string;
   audioCodec?: string;
   isImage?: boolean;
@@ -22,9 +42,14 @@ export interface ExportClip {
   volumeDb: number;
   speed?: number;
   sharpness?: number;
+  videoAdjustments?: VideoAdjustments;
   startMs?: number;
   trackIndex?: number;
   overlayBounds?: ExportCrop;
+  canvasBounds?: ExportCrop;
+  crop?: ExportCrop;
+  transitionIn?: ExportTransition;
+  transitionOut?: ExportTransition;
 }
 
 export interface ExportAspect {

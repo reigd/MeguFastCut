@@ -18,6 +18,10 @@ pub struct Capabilities {
     pub has_libopus: bool,
     pub has_libmp3lame: bool,
     pub has_flac: bool,
+    #[serde(default)]
+    pub has_xfade: bool,
+    #[serde(default)]
+    pub has_acrossfade: bool,
     pub recommended_hw: String, // "nvenc" | "qsv" | "amf" | "cpu"
 }
 
@@ -26,6 +30,10 @@ static CAPABILITIES: OnceLock<Capabilities> = OnceLock::new();
 pub fn detect_capabilities() -> &'static Capabilities {
     CAPABILITIES.get_or_init(|| {
         let output = match create_ffmpeg_command(["-encoders", "-hide_banner"]).output() {
+            Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
+            Err(_) => String::new(),
+        };
+        let filters_output = match create_ffmpeg_command(["-filters", "-hide_banner"]).output() {
             Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
             Err(_) => String::new(),
         };
@@ -46,6 +54,8 @@ pub fn detect_capabilities() -> &'static Capabilities {
         let has_libopus = output.contains("libopus");
         let has_libmp3lame = output.contains("libmp3lame");
         let has_flac = output.contains("flac");
+        let has_xfade = filters_output.contains(" xfade ");
+        let has_acrossfade = filters_output.contains(" acrossfade ");
 
         let recommended_hw = if has_nvenc_h264 {
             "nvenc".to_string()
@@ -72,6 +82,8 @@ pub fn detect_capabilities() -> &'static Capabilities {
             has_libopus,
             has_libmp3lame,
             has_flac,
+            has_xfade,
+            has_acrossfade,
             recommended_hw,
         }
     })

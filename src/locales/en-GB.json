@@ -3,6 +3,11 @@
     "pos_center": "Centre",
     "fill_color": "Fill colour"
   },
+  "video_edit": {
+    "no_clip_hint": "Add a video or image clip to adjust light, colour, detail, and optical effects",
+    "cat_color": "Colour",
+    "sec_color": "Colour & White Balance"
+  },
   "audio": {
     "normalization": "Audio normalisation",
     "norm_hint": "Two-pass normalisation ensures consistent loudness behaviour across devices"
@@ -15,5 +20,14 @@
     "replace_behavior": "Replace behaviour",
     "license_title": "Licence & Compliance",
     "license_desc": "Application code is licenced under MIT. Bundled FFmpeg is licenced under GNU GPLv3 as an independent sidecar aggregation."
+  },
+  "transitions": {
+    "dip_color": "Transition colour",
+    "items": {
+      "dipcolor": "Colour Dip"
+    },
+    "items_desc": {
+      "dipcolor": "Dip through any custom colour between scenes"
+    }
   }
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useProjectStore } from '../../stores/project';
 import { usePlayerStore } from '../../stores/player';
 import {
@@ -22,16 +22,31 @@ import {
   isImageSource,
   safeConvertFileSrc,
 } from '../../shared/media-formats';
+import {
+  MainClipTiming,
+  computeMainTrackTiming,
+  computeTransitionPreviewLayers,
+  isActiveTransition,
+} from '../../shared/transitions';
 import { getDraggingSourceId, setDraggingSourceId } from '../../shared/drag-state';
 import { Clip, PreviewQuality, SourceFile } from '../../shared/types';
 import { CropOverlay, NormalizedBounds } from '../transform/CropOverlay';
+import { VideoFrameOverlays, VideoSvgFilterDefs } from '../video/VideoFilterDefs';
+import {
+  DEFAULT_VIDEO_ADJUSTMENTS,
+  computePreviewFilterSpec,
+  hasActiveVideoAdjustments,
+  resolveClipVideoAdjustments,
+} from '../../shared/video-fx';
 import { t } from '../../shared/i18n';
-import { SparkleIcon, FilmIcon, LayersIcon } from '../../components/icons';
+import { SparkleIcon, FilmIcon, LayersIcon, CompareSplitIcon } from '../../components/icons';
 
 interface OverlayLayerItemProps {
   clip: Clip;
   source: SourceFile;
   localTimeMs: number;
+  clipDurationMs: number;
+  timelineOffsetMs: number;
   isPlaying: boolean;
   isAudioMuted: boolean;
   masterVolume: number;
@@ -41,6 +56,7 @@ interface OverlayLayerItemProps {
   containerH: number;
   zIndex: number;
   isSelected: boolean;
+  bypassVideoFx: boolean;
   onSelect: (clipId: string) => void;
 }
 
@@ -48,6 +64,8 @@ const OverlayLayerItem: React.FC<OverlayLayerItemProps> = ({
   clip,
   source,
   localTimeMs,
+  clipDurationMs,
+  timelineOffsetMs,
   isPlaying,
   isAudioMuted,
   masterVolume,
@@ -57,6 +75,7 @@ const OverlayLayerItem: React.FC<OverlayLayerItemProps> = ({
   containerH,
   zIndex,
   isSelected,
+  bypassVideoFx,
   onSelect,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -73,6 +92,24 @@ const OverlayLayerItem: React.FC<OverlayLayerItemProps> = ({
   const resolvedPath = resolvePreviewFilePath(source, previewQuality);
   const mediaUrl = useMemo(() => safeConvertFileSrc(resolvedPath), [resolvedPath]);
 
+  const overlayFadeGain = useMemo(() => {
+    let gain = 1;
+    if (isActiveTransition(clip.transitionIn)) {
+      const dur = Math.min(clip.transitionIn.durationMs, Math.max(0, clipDurationMs - 40));
+      if (dur > 0 && timelineOffsetMs < dur) {
+        gain = Math.min(gain, Math.max(0, timelineOffsetMs / dur));
+      }
+    }
+    if (isActiveTransition(clip.transitionOut)) {
+      const dur = Math.min(clip.transitionOut.durationMs, Math.max(0, clipDurationMs - 40));
+      const rem = clipDurationMs - timelineOffsetMs;
+      if (dur > 0 && rem < dur) {
+        gain = Math.min(gain, Math.max(0, rem / dur));
+      }
+    }
+    return gain;
+  }, [clip.transitionIn, clip.transitionOut, clipDurationMs, timelineOffsetMs]);
+
   // Sync overlay video playback, seeking, rate, and audio gain
   useEffect(() => {
     if (isImage) return;
@@ -82,7 +119,7 @@ const OverlayLayerItem: React.FC<OverlayLayerItemProps> = ({
     const totalDb = projectVolumeDb + (clip.volumeDb || 0);
     const gainLinear = Math.pow(10, totalDb / 20);
     el.muted = isAudioMuted;
-    el.volume = Math.max(0, Math.min(1, masterVolume * gainLinear));
+    el.volume = Math.max(0, Math.min(1, masterVolume * gainLinear * overlayFadeGain));
 
     const targetRate = Math.max(0.0625, Math.min(16, clip.speed || 1.0));
     if (Math.abs(el.playbackRate - targetRate) > 0.001) {
@@ -117,6 +154,7 @@ const OverlayLayerItem: React.FC<OverlayLayerItemProps> = ({
     projectVolumeDb,
     clip.volumeDb,
     clip.speed,
+    overlayFadeGain,
   ]);
 
   const bounds = useMemo(() => {
@@ -129,7 +167,14 @@ const OverlayLayerItem: React.FC<OverlayLayerItemProps> = ({
       clip.rotate,
       0.6
     );
-  }, [clip.overlayBounds, clip.rotate, source.probe.video?.width, source.probe.video?.height, containerW, containerH]);
+  }, [
+    clip.overlayBounds,
+    clip.rotate,
+    source.probe.video?.width,
+    source.probe.video?.height,
+    containerW,
+    containerH,
+  ]);
 
   const boxLeft = Math.round(bounds.x * containerW);
   const boxTop = Math.round(bounds.y * containerH);
@@ -140,18 +185,18 @@ const OverlayLayerItem: React.FC<OverlayLayerItemProps> = ({
   const innerW = isQuarter ? boxH : boxW;
   const innerH = isQuarter ? boxW : boxH;
   const cssTransform = buildCssTransform(clip.rotate || 0, clip.flipH || false, clip.flipV || false);
-  const fullTransform = cssTransform === 'none'
-    ? 'translate(-50%, -50%)'
-    : `translate(-50%, -50%) ${cssTransform}`;
+  const fullTransform =
+    cssTransform === 'none'
+      ? 'translate(-50%, -50%)'
+      : `translate(-50%, -50%) ${cssTransform}`;
 
-  const sharpness = Math.max(0, Math.min(1, clip.sharpness ?? 0));
-  const filterId = `megu-ov-sharpen-${clip.id}`;
-  const kernelMatrix = useMemo(() => {
-    if (sharpness <= 0.001) return null;
-    const k = Number((sharpness * 0.65).toFixed(4));
-    const center = Number((1 + 4 * k).toFixed(4));
-    return `0 ${-k} 0 ${-k} ${center} ${-k} 0 ${-k} 0`;
-  }, [sharpness]);
+  const filterId = `megu-ov-fx-${clip.id}`;
+  const fxSpec = useMemo(() => {
+    const adj = bypassVideoFx
+      ? DEFAULT_VIDEO_ADJUSTMENTS
+      : resolveClipVideoAdjustments(clip);
+    return computePreviewFilterSpec(adj, boxW, boxH);
+  }, [bypassVideoFx, clip, boxW, boxH]);
 
   const mediaStyle: React.CSSProperties = {
     position: 'absolute',
@@ -161,7 +206,8 @@ const OverlayLayerItem: React.FC<OverlayLayerItemProps> = ({
     height: `${innerH}px`,
     transform: fullTransform,
     objectFit: 'fill',
-    filter: kernelMatrix ? `url(#${filterId})` : undefined,
+    filter: fxSpec.hasSvgFilter ? `url(#${filterId})` : undefined,
+    opacity: fxSpec.opacityFactor,
     pointerEvents: 'none',
     userSelect: 'none',
   };
@@ -182,29 +228,12 @@ const OverlayLayerItem: React.FC<OverlayLayerItemProps> = ({
         height: `${boxH}px`,
         zIndex,
         overflow: 'hidden',
+        opacity: overlayFadeGain,
         cursor: isSelected ? 'grab' : 'pointer',
         pointerEvents: 'auto',
       }}
     >
-      {kernelMatrix && (
-        <svg
-          aria-hidden="true"
-          width="0"
-          height="0"
-          style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }}
-        >
-          <defs>
-            <filter id={filterId} colorInterpolationFilters="sRGB">
-              <feConvolveMatrix
-                order="3"
-                kernelMatrix={kernelMatrix}
-                preserveAlpha="true"
-                edgeMode="duplicate"
-              />
-            </filter>
-          </defs>
-        </svg>
-      )}
+      <VideoSvgFilterDefs filterId={filterId} spec={fxSpec} />
 
       {mediaUrl ? (
         isImage ? (
@@ -248,9 +277,30 @@ const OverlayLayerItem: React.FC<OverlayLayerItemProps> = ({
           />
         )
       ) : null}
+
+      <VideoFrameOverlays spec={fxSpec} />
     </div>
   );
 };
+
+interface SlotActiveConfig {
+  item: MainClipTiming;
+  source?: SourceFile;
+  localTimeMs: number;
+  mediaPath: string;
+  mediaUrl: string;
+  videoSrc: string;
+  isImage: boolean;
+  audioGainMultiplier: number;
+  layerStyle: React.CSSProperties;
+  zIndex: number;
+}
+
+interface SlotPreloadConfig {
+  item: MainClipTiming;
+  source?: SourceFile;
+  videoSrc: string;
+}
 
 export const VideoPlayer: React.FC = () => {
   const {
@@ -276,6 +326,7 @@ export const VideoPlayer: React.FC = () => {
     pause,
     previewQuality,
     proxyStatus,
+    bypassVideoFx,
     isCropEditing,
     setCropEditing,
   } = usePlayerStore();
@@ -286,7 +337,6 @@ export const VideoPlayer: React.FC = () => {
   const videoBRef = useRef<HTMLVideoElement>(null);
   const bgVideoRef = useRef<HTMLVideoElement>(null);
 
-  const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A');
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [isResizingCrop, setIsResizingCrop] = useState(false);
   const [isViewportDragOver, setIsViewportDragOver] = useState(false);
@@ -305,60 +355,276 @@ export const VideoPlayer: React.FC = () => {
     return () => ro.disconnect();
   }, []);
 
-  // Main track clips (V1, trackIndex === 0)
-  const mainClips = useMemo(
-    () =>
-      project.clips
-        .filter((c) => c.enabled && getClipTrackIndex(c) === 0)
-        .sort((a, b) => (a.startMs ?? 0) - (b.startMs ?? 0)),
-    [project.clips]
-  );
+  const mainTiming = useMemo(() => computeMainTrackTiming(project.clips), [project.clips]);
+  const mainItems = mainTiming.items;
+  const totalDurationMs = useMemo(() => getTimelineTotalDurationMs(project.clips), [project.clips]);
 
-  // Active clip on main track V1 at currentTimeMs
-  const { currentClip, currentSource, currentClipIndex, clipLocalTimeMs, isGap } = useMemo(() => {
-    for (let i = 0; i < mainClips.length; i++) {
-      const clip = mainClips[i];
-      const speed = clip.speed && clip.speed > 0 ? clip.speed : 1.0;
-      const clipDuration = getClipDurationMs(clip);
-      const clipStart = getClipStartMs(clip, project.clips);
-      const clipEnd = clipStart + clipDuration;
-      const nextClipStart = mainClips[i + 1]
-        ? getClipStartMs(mainClips[i + 1], project.clips)
-        : clipEnd;
+  // Resolve active V1 item(s) at currentTimeMs (supports solo playback AND dual-layer junction overlap!)
+  const v1FrameState = useMemo(() => {
+    const active: MainClipTiming[] = [];
+    for (let i = 0; i < mainItems.length; i++) {
+      const it = mainItems[i];
+      const next = mainItems[i + 1];
       const isAtClipEnd =
-        clipDuration > 0 &&
-        currentTimeMs === clipEnd &&
-        (i === mainClips.length - 1 || nextClipStart > clipEnd);
-
-      if (currentTimeMs >= clipStart && (currentTimeMs < clipEnd || isAtClipEnd)) {
-        const localTimelineProgress = Math.min(clipDuration, currentTimeMs - clipStart);
-        const localSourceTime = clip.inMs + localTimelineProgress * speed;
-        const src = sources.find((s) => s.id === clip.sourceId);
-        return {
-          currentClip: clip,
-          currentSource: src,
-          currentClipIndex: i,
-          clipLocalTimeMs: Math.min(clip.outMs, Math.max(clip.inMs, localSourceTime)),
-          isGap: false,
-        };
+        it.durationMs > 0 &&
+        currentTimeMs === it.playEndMs &&
+        (!next || next.playStartMs > it.playEndMs);
+      if (currentTimeMs >= it.playStartMs && (currentTimeMs < it.playEndMs || isAtClipEnd)) {
+        active.push(it);
       }
     }
 
-    return {
-      currentClip: undefined,
-      currentSource: undefined,
-      currentClipIndex: -1,
-      clipLocalTimeMs: 0,
-      isGap: true,
-    };
-  }, [mainClips, project.clips, sources, currentTimeMs]);
+    if (active.length === 0) {
+      return {
+        isGap: true,
+        leader: undefined as MainClipTiming | undefined,
+        outgoing: undefined as MainClipTiming | undefined,
+        incoming: undefined as MainClipTiming | undefined,
+        solo: undefined as MainClipTiming | undefined,
+        dipOverlayColor: null as string | null,
+        dipOverlayOpacity: 0,
+        outStyle: {} as React.CSSProperties,
+        inStyle: {} as React.CSSProperties,
+        outAudioGain: 1,
+        inAudioGain: 1,
+      };
+    }
 
+    if (active.length >= 2) {
+      const outgoing = active[0];
+      const incoming = active[active.length - 1];
+      const overlap = Math.max(1, incoming.overlapInMs);
+      const progress = Math.max(0, Math.min(1, (currentTimeMs - incoming.playStartMs) / overlap));
+      const tr = incoming.clip.transitionIn!;
+      const layers = computeTransitionPreviewLayers(tr, progress, 'junction');
+      return {
+        isGap: false,
+        leader: incoming,
+        outgoing,
+        incoming,
+        solo: undefined,
+        dipOverlayColor: layers.dipOverlayColor,
+        dipOverlayOpacity: layers.dipOverlayOpacity,
+        outStyle: layers.outStyle,
+        inStyle: layers.inStyle,
+        outAudioGain: layers.outAudioGain,
+        inAudioGain: layers.inAudioGain,
+      };
+    }
+
+    const solo = active[0];
+    if (
+      solo.introDurationMs > 0 &&
+      isActiveTransition(solo.clip.transitionIn) &&
+      currentTimeMs < solo.playStartMs + solo.introDurationMs
+    ) {
+      const progress = Math.max(
+        0,
+        Math.min(1, (currentTimeMs - solo.playStartMs) / solo.introDurationMs)
+      );
+      const layers = computeTransitionPreviewLayers(solo.clip.transitionIn, progress, 'intro');
+      return {
+        isGap: false,
+        leader: solo,
+        outgoing: undefined,
+        incoming: undefined,
+        solo,
+        dipOverlayColor: layers.dipOverlayColor,
+        dipOverlayOpacity: layers.dipOverlayOpacity,
+        outStyle: {} as React.CSSProperties,
+        inStyle: layers.inStyle,
+        outAudioGain: 0,
+        inAudioGain: layers.inAudioGain,
+      };
+    }
+
+    if (
+      solo.outroDurationMs > 0 &&
+      isActiveTransition(solo.clip.transitionOut) &&
+      currentTimeMs >= solo.playEndMs - solo.outroDurationMs
+    ) {
+      const outroStart = solo.playEndMs - solo.outroDurationMs;
+      const progress = Math.max(0, Math.min(1, (currentTimeMs - outroStart) / solo.outroDurationMs));
+      const layers = computeTransitionPreviewLayers(solo.clip.transitionOut, progress, 'outro');
+      return {
+        isGap: false,
+        leader: solo,
+        outgoing: undefined,
+        incoming: undefined,
+        solo,
+        dipOverlayColor: layers.dipOverlayColor,
+        dipOverlayOpacity: layers.dipOverlayOpacity,
+        outStyle: layers.outStyle,
+        inStyle: {} as React.CSSProperties,
+        outAudioGain: layers.outAudioGain,
+        inAudioGain: 0,
+      };
+    }
+
+    return {
+      isGap: false,
+      leader: solo,
+      outgoing: undefined,
+      incoming: undefined,
+      solo,
+      dipOverlayColor: null,
+      dipOverlayOpacity: 0,
+      outStyle: {} as React.CSSProperties,
+      inStyle: {} as React.CSSProperties,
+      outAudioGain: 1,
+      inAudioGain: 1,
+    };
+  }, [mainItems, currentTimeMs]);
+
+  const computeLocalSourceMs = useCallback((item: MainClipTiming, globalMs: number): number => {
+    const speed = item.clip.speed && item.clip.speed > 0 ? item.clip.speed : 1.0;
+    const progress = Math.max(0, Math.min(item.durationMs, globalMs - item.playStartMs));
+    const sourceMs = item.clip.inMs + progress * speed;
+    return Math.min(item.clip.outMs, Math.max(item.clip.inMs, sourceMs));
+  }, []);
+
+  const buildActiveSlotConfig = useCallback(
+    (
+      item: MainClipTiming,
+      layerStyle: React.CSSProperties,
+      audioGainMultiplier: number,
+      baseZ: number
+    ): SlotActiveConfig => {
+      const source = sources.find((s) => s.id === item.clip.sourceId);
+      const isImg = isImageSource(source);
+      const mediaPath = source ? resolvePreviewFilePath(source, previewQuality) : '';
+      const mediaUrl = mediaPath ? safeConvertFileSrc(mediaPath) : '';
+      const explicitZ = typeof layerStyle.zIndex === 'number' ? layerStyle.zIndex : 0;
+      return {
+        item,
+        source,
+        localTimeMs: computeLocalSourceMs(item, currentTimeMs),
+        mediaPath,
+        mediaUrl,
+        videoSrc: isImg ? '' : mediaUrl,
+        isImage: isImg,
+        audioGainMultiplier,
+        layerStyle,
+        zIndex: baseZ + explicitZ,
+      };
+    },
+    [sources, previewQuality, computeLocalSourceMs, currentTimeMs]
+  );
+
+  // Assign deterministic slots A (even index) and B (odd index)
+  const { slotAConfig, slotBConfig, preloadA, preloadB } = useMemo(() => {
+    let cfgA: SlotActiveConfig | null = null;
+    let cfgB: SlotActiveConfig | null = null;
+
+    if (v1FrameState.outgoing && v1FrameState.incoming) {
+      const outCfg = buildActiveSlotConfig(
+        v1FrameState.outgoing,
+        v1FrameState.outStyle,
+        v1FrameState.outAudioGain,
+        2
+      );
+      const inCfg = buildActiveSlotConfig(
+        v1FrameState.incoming,
+        v1FrameState.inStyle,
+        v1FrameState.inAudioGain,
+        3
+      );
+      if (v1FrameState.outgoing.index % 2 === 0) {
+        cfgA = outCfg;
+        cfgB = inCfg;
+      } else {
+        cfgB = outCfg;
+        cfgA = inCfg;
+      }
+    } else if (v1FrameState.solo) {
+      const solo = v1FrameState.solo;
+      const isOutro =
+        solo.outroDurationMs > 0 && currentTimeMs >= solo.playEndMs - solo.outroDurationMs;
+      const style = isOutro ? v1FrameState.outStyle : v1FrameState.inStyle;
+      const gain = isOutro ? v1FrameState.outAudioGain : v1FrameState.inAudioGain;
+      const soloCfg = buildActiveSlotConfig(solo, style, gain, 2);
+      if (solo.index % 2 === 0) {
+        cfgA = soloCfg;
+      } else {
+        cfgB = soloCfg;
+      }
+    }
+
+    // Preload next V1 video clip into whichever slot is currently idle
+    let preA: SlotPreloadConfig | null = null;
+    let preB: SlotPreloadConfig | null = null;
+    const leaderIdx = v1FrameState.leader?.index ?? -1;
+    const nextItem =
+      leaderIdx >= 0
+        ? mainItems[leaderIdx + 1]
+        : mainItems.find((it) => it.playStartMs > currentTimeMs);
+
+    if (nextItem) {
+      const nextSrc = sources.find((s) => s.id === nextItem.clip.sourceId);
+      if (nextSrc && !isImageSource(nextSrc)) {
+        const nextUrl = safeConvertFileSrc(resolvePreviewFilePath(nextSrc, previewQuality));
+        const pre: SlotPreloadConfig = { item: nextItem, source: nextSrc, videoSrc: nextUrl };
+        if (nextItem.index % 2 === 0 && !cfgA) {
+          preA = pre;
+        } else if (nextItem.index % 2 === 1 && !cfgB) {
+          preB = pre;
+        }
+      }
+    }
+
+    return { slotAConfig: cfgA, slotBConfig: cfgB, preloadA: preA, preloadB: preB };
+  }, [v1FrameState, mainItems, sources, previewQuality, currentTimeMs, buildActiveSlotConfig]);
+
+  const leaderItem = v1FrameState.leader;
+  const currentClip = leaderItem?.clip;
+  const currentSource = useMemo(
+    () => (currentClip ? sources.find((s) => s.id === currentClip.sourceId) : undefined),
+    [currentClip, sources]
+  );
   const isCurrentMainImage = isImageSource(currentSource);
-  const totalDurationMs = useMemo(() => getTimelineTotalDurationMs(project.clips), [project.clips]);
+  const isGap = v1FrameState.isGap;
+  const leaderSlot: 'A' | 'B' = leaderItem && leaderItem.index % 2 === 1 ? 'B' : 'A';
+  const currentMediaPath = useMemo(
+    () => (currentSource ? resolvePreviewFilePath(currentSource, previewQuality) : ''),
+    [currentSource, previewQuality]
+  );
+  const currentMediaUrl = useMemo(
+    () => (currentMediaPath ? safeConvertFileSrc(currentMediaPath) : ''),
+    [currentMediaPath]
+  );
+  const currentVideoSrc = isCurrentMainImage ? '' : currentMediaUrl;
+
+  // Trigger proxy generation for active & upcoming V1 sources
+  useEffect(() => {
+    const candidates = [
+      slotAConfig?.source,
+      slotBConfig?.source,
+      preloadA?.source,
+      preloadB?.source,
+    ];
+    for (const src of candidates) {
+      if (src) {
+        void ensureProxy(src, previewQuality);
+      }
+    }
+  }, [
+    slotAConfig?.source?.id,
+    slotBConfig?.source?.id,
+    preloadA?.source?.id,
+    preloadB?.source?.id,
+    previewQuality,
+  ]);
 
   // Visible overlay clips (V2, V3, ...) sorted bottom-to-top by trackIndex
   const visibleOverlays = useMemo(() => {
-    const items: { clip: Clip; source: SourceFile; localTimeMs: number; trackIndex: number }[] = [];
+    const items: {
+      clip: Clip;
+      source: SourceFile;
+      localTimeMs: number;
+      clipDurationMs: number;
+      timelineOffsetMs: number;
+      trackIndex: number;
+    }[] = [];
     for (const clip of project.clips) {
       if (!clip.enabled) continue;
       const trackIndex = getClipTrackIndex(clip);
@@ -378,6 +644,8 @@ export const VideoPlayer: React.FC = () => {
           clip,
           source: src,
           localTimeMs: Math.min(clip.outMs, Math.max(clip.inMs, localSourceTime)),
+          clipDurationMs: clipDuration,
+          timelineOffsetMs: localProgress,
           trackIndex,
         });
       }
@@ -386,224 +654,122 @@ export const VideoPlayer: React.FC = () => {
     return items;
   }, [project.clips, sources, currentTimeMs, totalDurationMs]);
 
-  // Synchronized refs for 60fps playback loop
-  const currentClipRef = useRef(currentClip);
-  currentClipRef.current = currentClip;
-  const isCurrentMainImageRef = useRef(isCurrentMainImage);
-  isCurrentMainImageRef.current = isCurrentMainImage;
-  const isGapRef = useRef(isGap);
-  isGapRef.current = isGap;
+  const isAudioMuted = isMuted || project.audio.muted;
+
+  // Refs for 60fps playback loop
+  const slotAConfigRef = useRef(slotAConfig);
+  slotAConfigRef.current = slotAConfig;
+  const slotBConfigRef = useRef(slotBConfig);
+  slotBConfigRef.current = slotBConfig;
+  const leaderItemRef = useRef(leaderItem);
+  leaderItemRef.current = leaderItem;
+  const mainItemsRef = useRef(mainItems);
+  mainItemsRef.current = mainItems;
+  const totalDurationMsRef = useRef(totalDurationMs);
+  totalDurationMsRef.current = totalDurationMs;
   const currentTimeMsRef = useRef(currentTimeMs);
   currentTimeMsRef.current = currentTimeMs;
-  const currentClipIndexRef = useRef(currentClipIndex);
-  currentClipIndexRef.current = currentClipIndex;
-  const clipLocalTimeMsRef = useRef(clipLocalTimeMs);
-  clipLocalTimeMsRef.current = clipLocalTimeMs;
-  const mainClipsRef = useRef(mainClips);
-  mainClipsRef.current = mainClips;
-  const allClipsRef = useRef(project.clips);
-  allClipsRef.current = project.clips;
   const sourcesRef = useRef(sources);
   sourcesRef.current = sources;
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
   const lastEmittedTimeMsRef = useRef<number>(currentTimeMs);
 
-  const nextClip = useMemo(() => mainClips[currentClipIndex + 1], [mainClips, currentClipIndex]);
-  const nextSource = useMemo(() => {
-    if (!nextClip) return undefined;
-    return sources.find((s) => s.id === nextClip.sourceId);
-  }, [nextClip, sources]);
-  const isNextMainImage = isImageSource(nextSource);
+  // Sync each <video> slot (A & B) with its active config or passive preload
+  const syncSlotElement = useCallback(
+    (
+      el: HTMLVideoElement | null,
+      activeCfg: SlotActiveConfig | null,
+      preloadCfg: SlotPreloadConfig | null
+    ) => {
+      if (!el) return;
+      const desiredSrc = activeCfg?.videoSrc || preloadCfg?.videoSrc || '';
 
-  // Trigger proxy generation for current & next V1 sources
-  const currentSourceId = currentSource?.id;
-  const currentSourceProbe = currentSource?.probe;
-  const currentHasCachedProxy = Boolean(
-    currentSource &&
-      (isCurrentMainImage
-        ? currentSource.imagePreviewPath
-        : getCachedProxyPath(currentSource, previewQuality))
-  );
-  const nextSourceId = nextSource?.id;
-  const nextSourceProbe = nextSource?.probe;
-  const nextHasCachedProxy = Boolean(
-    nextSource &&
-      (isNextMainImage
-        ? nextSource.imagePreviewPath
-        : getCachedProxyPath(nextSource, previewQuality))
-  );
-
-  useEffect(() => {
-    if (currentSource) {
-      void ensureProxy(currentSource, previewQuality);
-    }
-    if (nextSource) {
-      void ensureProxy(nextSource, previewQuality);
-    }
-  }, [
-    currentSourceId,
-    currentSourceProbe,
-    currentHasCachedProxy,
-    nextSourceId,
-    nextSourceProbe,
-    nextHasCachedProxy,
-    previewQuality,
-  ]);
-
-  const currentMediaPath = useMemo(() => {
-    if (!currentSource) return '';
-    return resolvePreviewFilePath(currentSource, previewQuality);
-  }, [currentSource, previewQuality]);
-
-  const currentMediaUrl = useMemo(() => {
-    if (!currentMediaPath) return '';
-    return safeConvertFileSrc(currentMediaPath);
-  }, [currentMediaPath]);
-
-  const currentVideoSrc = isCurrentMainImage ? '' : currentMediaUrl;
-
-  const nextVideoSrc = useMemo(() => {
-    if (!nextSource || isNextMainImage) return '';
-    const filePath = resolvePreviewFilePath(nextSource, previewQuality);
-    return safeConvertFileSrc(filePath);
-  }, [nextSource, isNextMainImage, previewQuality]);
-
-  // Sync active <video> src for V1 video clips
-  useEffect(() => {
-    const activeEl = activeSlot === 'A' ? videoARef.current : videoBRef.current;
-    if (!activeEl) return;
-
-    if (currentVideoSrc) {
-      if (activeEl.getAttribute('data-raw-src') !== currentVideoSrc) {
-        activeEl.src = currentVideoSrc;
-        activeEl.setAttribute('data-raw-src', currentVideoSrc);
-        activeEl.load();
-        const targetSec = clipLocalTimeMsRef.current / 1000;
-        if (targetSec > 0) {
-          activeEl.currentTime = targetSec;
-        }
-        if (bgVideoRef.current) {
-          bgVideoRef.current.currentTime = targetSec;
-        }
-        if (isPlayingRef.current && !isGapRef.current && !isCurrentMainImageRef.current) {
-          activeEl.play().catch((err) => console.error('Active play error after src change:', err));
-        }
-      }
-    } else if (mainClips.length === 0 || isCurrentMainImage) {
-      for (const el of [videoARef.current, videoBRef.current]) {
-        if (el && !el.paused) {
-          el.pause();
-        }
-        if (mainClips.length === 0 && el && (el.hasAttribute('src') || el.hasAttribute('data-raw-src'))) {
+      if (!desiredSrc) {
+        if (!el.paused) el.pause();
+        if (el.hasAttribute('src') || el.hasAttribute('data-raw-src')) {
           el.removeAttribute('src');
           el.removeAttribute('data-raw-src');
           el.load();
         }
+        return;
       }
-    }
-  }, [activeSlot, currentVideoSrc, mainClips.length, isCurrentMainImage]);
 
-  // Preload next V1 video clip in passive element
-  useEffect(() => {
-    const passiveEl = activeSlot === 'A' ? videoBRef.current : videoARef.current;
-    if (!passiveEl) return;
-
-    if (nextVideoSrc && nextClip) {
-      if (passiveEl.getAttribute('data-raw-src') !== nextVideoSrc) {
-        passiveEl.src = nextVideoSrc;
-        passiveEl.setAttribute('data-raw-src', nextVideoSrc);
-        passiveEl.load();
-        passiveEl.currentTime = nextClip.inMs / 1000;
-        passiveEl.pause();
-      }
-    } else if (passiveEl.hasAttribute('src') || passiveEl.hasAttribute('data-raw-src')) {
-      passiveEl.pause();
-      passiveEl.removeAttribute('src');
-      passiveEl.removeAttribute('data-raw-src');
-      passiveEl.load();
-    }
-  }, [activeSlot, nextVideoSrc, nextClip?.id, nextClip?.inMs]);
-
-  const isAudioMuted = isMuted || project.audio.muted;
-
-  // Sync V1 video play/pause & volume
-  useEffect(() => {
-    const activeEl = activeSlot === 'A' ? videoARef.current : videoBRef.current;
-    if (!activeEl) return;
-    const totalDb = project.audio.volumeDb + (currentClip?.volumeDb || 0);
-    const gainLinear = Math.pow(10, totalDb / 20);
-    activeEl.muted = isAudioMuted;
-    activeEl.volume = Math.max(0, Math.min(1, volume * gainLinear));
-
-    if (isPlaying && !isGap && !isCurrentMainImage && currentVideoSrc) {
-      activeEl.play().catch((err) => {
-        console.error('Video play error:', err);
-        pause();
-      });
-      bgVideoRef.current?.play().catch(() => {});
-    } else {
-      activeEl.pause();
-      bgVideoRef.current?.pause();
-    }
-  }, [
-    activeSlot,
-    currentVideoSrc,
-    isPlaying,
-    isGap,
-    isCurrentMainImage,
-    isAudioMuted,
-    volume,
-    project.audio.volumeDb,
-    currentClip?.volumeDb,
-    pause,
-  ]);
-
-  // Set V1 video playbackRate
-  useEffect(() => {
-    const activeEl = activeSlot === 'A' ? videoARef.current : videoBRef.current;
-    if (activeEl && currentClip && !isCurrentMainImage) {
-      const targetRate = Math.max(0.0625, Math.min(16, currentClip.speed || 1.0));
-      if (Math.abs(activeEl.playbackRate - targetRate) > 0.001) {
-        try {
-          activeEl.playbackRate = targetRate;
-        } catch (e) {
-          console.warn('Could not set playbackRate:', e);
+      if (el.getAttribute('data-raw-src') !== desiredSrc) {
+        el.src = desiredSrc;
+        el.setAttribute('data-raw-src', desiredSrc);
+        el.load();
+        const initSec = activeCfg
+          ? activeCfg.localTimeMs / 1000
+          : (preloadCfg?.item.clip.inMs ?? 0) / 1000;
+        if (initSec > 0) {
+          el.currentTime = initSec;
         }
       }
-    }
-  }, [activeSlot, currentVideoSrc, currentClip?.id, currentClip?.speed, isCurrentMainImage]);
 
-  // Seeking sync when paused
-  useEffect(() => {
-    const activeEl = activeSlot === 'A' ? videoARef.current : videoBRef.current;
-    if (!activeEl || isPlaying || !currentVideoSrc || isCurrentMainImage) return;
-    if (activeEl.readyState < 1) return;
-    const targetSec = clipLocalTimeMs / 1000;
-    if (Math.abs(activeEl.currentTime - targetSec) > 0.03) {
-      activeEl.currentTime = targetSec;
-      if (bgVideoRef.current && bgVideoRef.current.readyState >= 1) {
-        bgVideoRef.current.currentTime = targetSec;
+      if (activeCfg) {
+        const totalDb = project.audio.volumeDb + (activeCfg.item.clip.volumeDb || 0);
+        const gainLinear = Math.pow(10, totalDb / 20);
+        el.muted = isAudioMuted;
+        el.volume = Math.max(
+          0,
+          Math.min(1, volume * gainLinear * activeCfg.audioGainMultiplier)
+        );
+
+        const targetRate = Math.max(0.0625, Math.min(16, activeCfg.item.clip.speed || 1.0));
+        if (Math.abs(el.playbackRate - targetRate) > 0.001) {
+          try {
+            el.playbackRate = targetRate;
+          } catch {
+            // ignore unsupported rate
+          }
+        }
+
+        const targetSec = activeCfg.localTimeMs / 1000;
+        if (isPlaying) {
+          if (el.readyState >= 1 && Math.abs(el.currentTime - targetSec) > 0.18) {
+            el.currentTime = targetSec;
+          }
+          if (el.paused) {
+            el.play().catch(() => {});
+          }
+        } else {
+          if (!el.paused) el.pause();
+          if (el.readyState >= 1 && Math.abs(el.currentTime - targetSec) > 0.03) {
+            el.currentTime = targetSec;
+          }
+        }
+      } else if (preloadCfg) {
+        if (!el.paused) el.pause();
+        const preSec = preloadCfg.item.clip.inMs / 1000;
+        if (el.readyState >= 1 && Math.abs(el.currentTime - preSec) > 0.05) {
+          el.currentTime = preSec;
+        }
       }
-    }
-  }, [activeSlot, currentVideoSrc, clipLocalTimeMs, isPlaying, isCurrentMainImage]);
+    },
+    [isAudioMuted, volume, project.audio.volumeDb, isPlaying]
+  );
 
-  // External seek during playback
   useEffect(() => {
-    const activeEl = activeSlot === 'A' ? videoARef.current : videoBRef.current;
-    if (!activeEl || !isPlaying || !currentVideoSrc || isCurrentMainImage) return;
-    const diff = Math.abs(currentTimeMs - lastEmittedTimeMsRef.current);
-    if (diff > 400) {
-      const targetSec = clipLocalTimeMs / 1000;
-      activeEl.currentTime = targetSec;
-      lastEmittedTimeMsRef.current = currentTimeMs;
-      if (bgVideoRef.current) {
-        bgVideoRef.current.currentTime = targetSec;
-      }
-    }
-  }, [activeSlot, currentVideoSrc, currentTimeMs, clipLocalTimeMs, isPlaying, isCurrentMainImage]);
+    syncSlotElement(videoARef.current, slotAConfig, preloadA);
+  }, [slotAConfig, preloadA, syncSlotElement]);
 
-  // Smooth 60fps Multi-Track Playback Engine (supports V1 videos, V1 images, gaps, and overlays past V1)
+  useEffect(() => {
+    syncSlotElement(videoBRef.current, slotBConfig, preloadB);
+  }, [slotBConfig, preloadB, syncSlotElement]);
+
+  // Sync blurred background video
+  useEffect(() => {
+    const bgEl = bgVideoRef.current;
+    if (!bgEl) return;
+    if (isPlaying && !isGap && !isCurrentMainImage && currentVideoSrc) {
+      bgEl.play().catch(() => {});
+    } else {
+      bgEl.pause();
+    }
+  }, [isPlaying, isGap, isCurrentMainImage, currentVideoSrc]);
+
+  // 60fps Multi-Track & Transition-Aware Playback Engine
   useEffect(() => {
     if (!isPlaying) return;
 
@@ -614,26 +780,30 @@ export const VideoPlayer: React.FC = () => {
     const onTick = () => {
       if (!isSubscribed) return;
 
-      const activeEl = activeSlot === 'A' ? videoARef.current : videoBRef.current;
-      const passiveEl = activeSlot === 'A' ? videoBRef.current : videoARef.current;
-
       const now = performance.now();
       const deltaMs = now - lastTickTime;
       lastTickTime = now;
 
-      const allClips = allClipsRef.current;
-      const v1Clips = mainClipsRef.current;
-      const totalDuration = getTimelineTotalDurationMs(allClips);
+      const items = mainItemsRef.current;
+      const totalDur = totalDurationMsRef.current;
+      const leader = leaderItemRef.current;
+      const leaderSlotCfg = leader
+        ? leader.index % 2 === 0
+          ? slotAConfigRef.current
+          : slotBConfigRef.current
+        : null;
+      const leaderEl = leader
+        ? leader.index % 2 === 0
+          ? videoARef.current
+          : videoBRef.current
+        : null;
 
-      // Clock-driven mode: when in a V1 gap OR playing a still image on V1 (or overlay-only timeline)
-      if (isGapRef.current || !currentClipRef.current || isCurrentMainImageRef.current) {
-        if (activeEl && !activeEl.paused) {
-          activeEl.pause();
-        }
+      // Clock-driven mode: gap OR still image OR missing video element
+      if (!leader || !leaderSlotCfg || leaderSlotCfg.isImage || !leaderEl) {
         const currTime = currentTimeMsRef.current;
         const nextTime = currTime + deltaMs;
 
-        if (totalDuration > 0 && nextTime >= totalDuration) {
+        if (totalDur > 0 && nextTime >= totalDur) {
           if (usePlayerStore.getState().isLooping) {
             lastEmittedTimeMsRef.current = 0;
             seek(0);
@@ -643,24 +813,6 @@ export const VideoPlayer: React.FC = () => {
             return;
           }
         } else {
-          // Check if nextTime enters a V1 video clip
-          const matchingClip = v1Clips.find((c) => {
-            const dur = getClipDurationMs(c);
-            const cStart = getClipStartMs(c, allClips);
-            return nextTime >= cStart && nextTime < cStart + dur;
-          });
-
-          if (matchingClip && activeEl) {
-            const matchSrc = sourcesRef.current.find((s) => s.id === matchingClip.sourceId);
-            if (!isImageSource(matchSrc)) {
-              const cSpeed = matchingClip.speed && matchingClip.speed > 0 ? matchingClip.speed : 1.0;
-              const localOffset = nextTime - getClipStartMs(matchingClip, allClips);
-              const targetSec = (matchingClip.inMs + localOffset * cSpeed) / 1000;
-              activeEl.currentTime = targetSec;
-              activeEl.play().catch(() => {});
-            }
-          }
-
           lastEmittedTimeMsRef.current = nextTime;
           seek(nextTime);
         }
@@ -669,53 +821,30 @@ export const VideoPlayer: React.FC = () => {
         return;
       }
 
-      // Video-clock-driven mode: inside a V1 video clip
-      const currClip = currentClipRef.current;
-      if (!currClip || !activeEl) {
-        animFrameId = requestAnimationFrame(onTick);
-        return;
-      }
-
-      const vidTimeMs = activeEl.currentTime * 1000;
-      const speed = currClip.speed && currClip.speed > 0 ? currClip.speed : 1.0;
-      const clipStart = getClipStartMs(currClip, allClips);
-      const currentClipDur = getClipDurationMs(currClip);
-      const currentClipEnd = clipStart + currentClipDur;
+      // Video-clock-driven mode
+      const vidTimeMs = leaderEl.currentTime * 1000;
+      const speed = leader.clip.speed && leader.clip.speed > 0 ? leader.clip.speed : 1.0;
       const newGlobalTime =
-        clipStart + Math.max(0, Math.round((vidTimeMs - currClip.inMs) / speed));
+        leader.playStartMs + Math.max(0, Math.round((vidTimeMs - leader.clip.inMs) / speed));
 
-      if (vidTimeMs >= currClip.outMs || activeEl.ended || newGlobalTime >= currentClipEnd) {
-        const nextIdx = currentClipIndexRef.current + 1;
-        const nextV1 = v1Clips[nextIdx];
-
-        if (nextV1) {
-          const nextStart = getClipStartMs(nextV1, allClips);
-          const nextSrc = sourcesRef.current.find((s) => s.id === nextV1.sourceId);
-          if (nextStart <= currentClipEnd && passiveEl && !isImageSource(nextSrc)) {
-            passiveEl.play().catch((err) => console.error('Passive play error:', err));
-            setActiveSlot((prev) => (prev === 'A' ? 'B' : 'A'));
-            lastEmittedTimeMsRef.current = nextStart;
-            seek(nextStart);
-            return;
-          }
-          activeEl.pause();
-          lastEmittedTimeMsRef.current = currentClipEnd;
-          seek(currentClipEnd);
+      if (vidTimeMs >= leader.clip.outMs || leaderEl.ended || newGlobalTime >= leader.playEndMs) {
+        const nextItem = items[leader.index + 1];
+        if (nextItem) {
+          lastEmittedTimeMsRef.current = leader.playEndMs;
+          seek(leader.playEndMs);
           animFrameId = requestAnimationFrame(onTick);
           return;
         }
 
-        // If overlay tracks extend past the end of V1, keep advancing through the tail!
-        if (currentClipEnd < totalDuration) {
-          activeEl.pause();
-          lastEmittedTimeMsRef.current = currentClipEnd;
-          seek(currentClipEnd);
+        if (leader.playEndMs < totalDur) {
+          lastEmittedTimeMsRef.current = leader.playEndMs;
+          seek(leader.playEndMs);
           animFrameId = requestAnimationFrame(onTick);
           return;
         }
 
         if (usePlayerStore.getState().isLooping) {
-          activeEl.pause();
+          leaderEl.pause();
           lastEmittedTimeMsRef.current = 0;
           seek(0);
         } else {
@@ -723,13 +852,13 @@ export const VideoPlayer: React.FC = () => {
           seek(0);
           return;
         }
+      } else {
+        lastEmittedTimeMsRef.current = newGlobalTime;
+        seek(newGlobalTime);
       }
 
-      lastEmittedTimeMsRef.current = newGlobalTime;
-      seek(newGlobalTime);
-
-      if (bgVideoRef.current && Math.abs(bgVideoRef.current.currentTime - activeEl.currentTime) > 0.15) {
-        bgVideoRef.current.currentTime = activeEl.currentTime;
+      if (bgVideoRef.current && Math.abs(bgVideoRef.current.currentTime - leaderEl.currentTime) > 0.15) {
+        bgVideoRef.current.currentTime = leaderEl.currentTime;
       }
 
       animFrameId = requestAnimationFrame(onTick);
@@ -740,42 +869,47 @@ export const VideoPlayer: React.FC = () => {
       isSubscribed = false;
       cancelAnimationFrame(animFrameId);
     };
-  }, [activeSlot, isPlaying, seek, pause]);
+  }, [isPlaying, seek, pause]);
 
   const handleVideoLoadedMetadata = (slot: 'A' | 'B', e: React.SyntheticEvent<HTMLVideoElement>) => {
     const videoEl = e.currentTarget;
-    if (slot !== activeSlot) return;
+    const cfg = slot === 'A' ? slotAConfigRef.current : slotBConfigRef.current;
+    const pre = slot === 'A' ? preloadA : preloadB;
+    const targetSrc = cfg?.source || pre?.source;
 
     if (
-      currentSource &&
-      !isCurrentMainImage &&
-      currentSource.probe.video &&
+      targetSrc &&
+      !isImageSource(targetSrc) &&
+      targetSrc.probe.video &&
       videoEl.videoWidth === 0 &&
       videoEl.videoHeight === 0
     ) {
-      const resolvedPath = resolvePreviewFilePath(currentSource, previewQuality);
-      if (resolvedPath !== currentSource.path) {
-        void recoverBrokenProxy(currentSource, previewQuality, resolvedPath);
+      const resolvedPath = resolvePreviewFilePath(targetSrc, previewQuality);
+      if (resolvedPath !== targetSrc.path) {
+        void recoverBrokenProxy(targetSrc, previewQuality, resolvedPath);
       } else {
-        void ensureProxy(currentSource, previewQuality, { forceCodecFallback: true });
+        void ensureProxy(targetSrc, previewQuality, { forceCodecFallback: true });
       }
     }
 
-    const targetSec = clipLocalTimeMsRef.current / 1000;
-    videoEl.currentTime = targetSec;
-    const speed = currentClipRef.current?.speed || 1.0;
-    const clampedRate = Math.max(0.0625, Math.min(16, speed));
-    try {
-      videoEl.playbackRate = clampedRate;
-    } catch {
-      // ignore unsupported rate
-    }
-    const totalDb = project.audio.volumeDb + (currentClipRef.current?.volumeDb || 0);
-    const gainLinear = Math.pow(10, totalDb / 20);
-    videoEl.muted = isAudioMuted;
-    videoEl.volume = Math.max(0, Math.min(1, volume * gainLinear));
-    if (isPlayingRef.current && !isGapRef.current && !isCurrentMainImageRef.current) {
-      videoEl.play().catch(() => {});
+    if (cfg) {
+      videoEl.currentTime = cfg.localTimeMs / 1000;
+      const speed = cfg.item.clip.speed || 1.0;
+      try {
+        videoEl.playbackRate = Math.max(0.0625, Math.min(16, speed));
+      } catch {
+        // ignore
+      }
+      const totalDb = project.audio.volumeDb + (cfg.item.clip.volumeDb || 0);
+      const gainLinear = Math.pow(10, totalDb / 20);
+      videoEl.muted = isAudioMuted;
+      videoEl.volume = Math.max(0, Math.min(1, volume * gainLinear * cfg.audioGainMultiplier));
+      if (isPlayingRef.current && !cfg.isImage) {
+        videoEl.play().catch(() => {});
+      }
+    } else if (pre) {
+      videoEl.currentTime = pre.item.clip.inMs / 1000;
+      videoEl.pause();
     }
   };
 
@@ -783,23 +917,20 @@ export const VideoPlayer: React.FC = () => {
     const videoEl = e.currentTarget;
     const rawSrc = videoEl.getAttribute('data-raw-src');
     if (!rawSrc) return;
-
-    console.error(`Video ${slot} load error:`, videoEl.error?.message, videoEl.error?.code, rawSrc);
-
-    if (slot === activeSlot && currentSource && !isCurrentMainImage) {
-      const resolvedPath = resolvePreviewFilePath(currentSource, previewQuality);
-      if (resolvedPath !== currentSource.path) {
-        void recoverBrokenProxy(currentSource, previewQuality, resolvedPath);
-      } else if (currentSource.probe.video) {
-        void ensureProxy(currentSource, previewQuality, { forceCodecFallback: true });
+    const cfg = slot === 'A' ? slotAConfigRef.current : slotBConfigRef.current;
+    if (cfg?.source && !cfg.isImage) {
+      if (cfg.mediaPath !== cfg.source.path) {
+        void recoverBrokenProxy(cfg.source, previewQuality, cfg.mediaPath);
+      } else if (cfg.source.probe.video) {
+        void ensureProxy(cfg.source, previewQuality, { forceCodecFallback: true });
       }
     }
   };
 
-  // Reference source dimensions for canvas ratio (fall back to first video/image source if V1 is currently in a gap)
+  // Reference source dimensions for canvas ratio
   const canvasRefSource =
     currentSource ||
-    sources.find((s) => s.id === mainClips[0]?.sourceId) ||
+    sources.find((s) => s.id === mainItems[0]?.clip.sourceId) ||
     sources.find((s) => s.probe.video) ||
     sources[0];
 
@@ -835,71 +966,139 @@ export const VideoPlayer: React.FC = () => {
   const containerW = parseInt(viewportDims.width, 10) || 800;
   const containerH = parseInt(viewportDims.height, 10) || 450;
 
-  const mainSrcW = currentSource?.probe.video?.width || srcW;
-  const mainSrcH = currentSource?.probe.video?.height || srcH;
+  const computeBoundsForDims = useCallback(
+    (itemSrcW: number, itemSrcH: number, clip?: Clip) => {
+      const safeW = itemSrcW > 0 ? itemSrcW : 1920;
+      const safeH = itemSrcH > 0 ? itemSrcH : 1080;
+      const canvasRatio = containerW / containerH;
+      const crop = clip?.cropOverride ?? project.crop;
+      const customBounds =
+        !showOriginalAspect && project.fitMode === 'fit'
+          ? (clip?.fitBounds ?? project.fitBounds)
+          : !showOriginalAspect && project.fitMode === 'stretch'
+            ? (clip?.stretchBounds ?? project.stretchBounds)
+            : null;
+      const isCropped =
+        project.fitMode === 'crop' &&
+        !isCropEditing &&
+        crop &&
+        crop.width > 0 &&
+        crop.height > 0 &&
+        (crop.width < 1 || crop.height < 1 || crop.x > 0 || crop.y > 0);
+      const effectiveW = isCropped ? safeW * crop.width : safeW;
+      const effectiveH = isCropped ? safeH * crop.height : safeH;
+      const videoRatio =
+        effectiveW > 0 && effectiveH > 0 ? effectiveW / effectiveH : safeW / safeH;
 
-  const fitBounds = useMemo(() => {
-    if (containerW <= 0 || containerH <= 0 || mainSrcW <= 0 || mainSrcH <= 0) {
-      return { left: 0, top: 0, width: containerW, height: containerH };
-    }
-    const canvasRatio = containerW / containerH;
-    const crop = project.crop;
-    const isCropped =
-      project.fitMode === 'crop' &&
-      !isCropEditing &&
-      crop &&
-      crop.width > 0 &&
-      crop.height > 0 &&
-      (crop.width < 1 || crop.height < 1 || crop.x > 0 || crop.y > 0);
-    const effectiveW = isCropped ? mainSrcW * crop.width : mainSrcW;
-    const effectiveH = isCropped ? mainSrcH * crop.height : mainSrcH;
-    const videoRatio = effectiveW > 0 && effectiveH > 0 ? effectiveW / effectiveH : mainSrcW / mainSrcH;
+      const fBounds =
+        videoRatio > canvasRatio
+          ? {
+              left: 0,
+              top: Math.round((containerH - Math.max(1, Math.round(containerW / videoRatio))) / 2),
+              width: containerW,
+              height: Math.max(1, Math.round(containerW / videoRatio)),
+            }
+          : {
+              left: Math.round((containerW - Math.max(1, Math.round(containerH * videoRatio))) / 2),
+              top: 0,
+              width: Math.max(1, Math.round(containerH * videoRatio)),
+              height: containerH,
+            };
 
-    if (videoRatio > canvasRatio) {
-      const w = containerW;
-      const h = Math.max(1, Math.round(containerW / videoRatio));
-      return { left: 0, top: Math.round((containerH - h) / 2), width: w, height: h };
-    } else {
-      const h = containerH;
-      const w = Math.max(1, Math.round(containerH * videoRatio));
-      return { left: Math.round((containerW - w) / 2), top: 0, width: w, height: h };
-    }
-  }, [containerW, containerH, mainSrcW, mainSrcH, project.fitMode, project.crop, isCropEditing]);
+      const defNorm: NormalizedBounds =
+        showOriginalAspect || project.fitMode === 'stretch' || containerW <= 0 || containerH <= 0
+          ? { x: 0, y: 0, width: 1, height: 1 }
+          : {
+              x: fBounds.left / containerW,
+              y: fBounds.top / containerH,
+              width: fBounds.width / containerW,
+              height: fBounds.height / containerH,
+            };
 
-  const defaultBounds = useMemo<NormalizedBounds>(() => {
-    if (showOriginalAspect || project.fitMode === 'stretch') {
-      return { x: 0, y: 0, width: 1, height: 1 };
-    }
-    if (containerW <= 0 || containerH <= 0) return { x: 0, y: 0, width: 1, height: 1 };
-    return {
-      x: fitBounds.left / containerW,
-      y: fitBounds.top / containerH,
-      width: fitBounds.width / containerW,
-      height: fitBounds.height / containerH,
-    };
-  }, [showOriginalAspect, project.fitMode, containerW, containerH, fitBounds]);
+      const actNorm = customBounds || defNorm;
+      const pxBounds = {
+        left: Math.round(actNorm.x * containerW),
+        top: Math.round(actNorm.y * containerH),
+        width: Math.max(1, Math.round(actNorm.width * containerW)),
+        height: Math.max(1, Math.round(actNorm.height * containerH)),
+      };
 
-  const activeCustomBounds =
-    !showOriginalAspect && project.fitMode === 'fit'
-      ? project.fitBounds
-      : !showOriginalAspect && project.fitMode === 'stretch'
-        ? project.stretchBounds
-        : null;
+      let inner = { left: 0, top: 0, width: pxBounds.width, height: pxBounds.height };
+      if (!showOriginalAspect && !isCropEditing && project.fitMode === 'crop') {
+        const hasCrop =
+          crop &&
+          crop.width > 0 &&
+          crop.height > 0 &&
+          (crop.width < 1 || crop.height < 1 || crop.x > 0 || crop.y > 0);
+        if (hasCrop) {
+          const vw = Math.max(1, Math.round(pxBounds.width / crop.width));
+          const vh = Math.max(1, Math.round(pxBounds.height / crop.height));
+          inner = {
+            left: Math.round(-crop.x * vw),
+            top: Math.round(-crop.y * vh),
+            width: vw,
+            height: vh,
+          };
+        }
+      }
 
-  const activeBounds = activeCustomBounds || defaultBounds;
-
-  const pixelBounds = useMemo(
-    () => ({
-      left: Math.round(activeBounds.x * containerW),
-      top: Math.round(activeBounds.y * containerH),
-      width: Math.max(1, Math.round(activeBounds.width * containerW)),
-      height: Math.max(1, Math.round(activeBounds.height * containerH)),
-    }),
-    [activeBounds, containerW, containerH]
+      return { defNorm, actNorm, pxBounds, inner };
+    },
+    [
+      containerW,
+      containerH,
+      project.fitMode,
+      project.crop,
+      project.fitBounds,
+      project.stretchBounds,
+      isCropEditing,
+      showOriginalAspect,
+    ]
   );
 
+  const mainSrcW = currentSource?.probe.video?.width || srcW;
+  const mainSrcH = currentSource?.probe.video?.height || srcH;
+  const currentMainCrop = currentClip?.cropOverride ?? project.crop;
+  const currentMainCustomBounds =
+    !showOriginalAspect && project.fitMode === 'fit'
+      ? (currentClip?.fitBounds ?? project.fitBounds)
+      : !showOriginalAspect && project.fitMode === 'stretch'
+        ? (currentClip?.stretchBounds ?? project.stretchBounds)
+        : null;
+
+  const { actNorm: activeBounds, pxBounds: pixelBounds } = useMemo(
+    () => computeBoundsForDims(mainSrcW, mainSrcH, currentClip),
+    [computeBoundsForDims, mainSrcW, mainSrcH, currentClip]
+  );
+
+  const slotALayout = useMemo(() => {
+    const w = slotAConfig?.source?.probe.video?.width || mainSrcW;
+    const h = slotAConfig?.source?.probe.video?.height || mainSrcH;
+    return computeBoundsForDims(w, h, slotAConfig?.item.clip);
+  }, [
+    slotAConfig?.source?.probe.video?.width,
+    slotAConfig?.source?.probe.video?.height,
+    slotAConfig?.item.clip,
+    mainSrcW,
+    mainSrcH,
+    computeBoundsForDims,
+  ]);
+
+  const slotBLayout = useMemo(() => {
+    const w = slotBConfig?.source?.probe.video?.width || mainSrcW;
+    const h = slotBConfig?.source?.probe.video?.height || mainSrcH;
+    return computeBoundsForDims(w, h, slotBConfig?.item.clip);
+  }, [
+    slotBConfig?.source?.probe.video?.width,
+    slotBConfig?.source?.probe.video?.height,
+    slotBConfig?.item.clip,
+    mainSrcW,
+    mainSrcH,
+    computeBoundsForDims,
+  ]);
+
   const hasLetterbox = useMemo(() => {
-    const crop = project.crop;
+    const crop = currentMainCrop;
     const isCropped =
       project.fitMode === 'crop' &&
       !isCropEditing &&
@@ -913,10 +1112,10 @@ export const VideoPlayer: React.FC = () => {
       effectiveW > 0 && effectiveH > 0 ? effectiveW / effectiveH : mainSrcW / mainSrcH;
     return (
       Math.abs(targetRatio - effectiveVideoRatio) > 0.02 ||
-      (activeCustomBounds != null &&
-        (activeCustomBounds.width < 0.98 || activeCustomBounds.height < 0.98))
+      (currentMainCustomBounds != null &&
+        (currentMainCustomBounds.width < 0.98 || currentMainCustomBounds.height < 0.98))
     );
-  }, [targetRatio, mainSrcW, mainSrcH, project.fitMode, project.crop, isCropEditing, activeCustomBounds]);
+  }, [targetRatio, mainSrcW, mainSrcH, project.fitMode, currentMainCrop, isCropEditing, currentMainCustomBounds]);
 
   const geometry = useMemo(() => {
     return computeGeometry(
@@ -924,9 +1123,9 @@ export const VideoPlayer: React.FC = () => {
       mainSrcH,
       showOriginalAspect ? { id: 'original' } : project.aspect,
       showOriginalAspect ? 'fit' : project.fitMode,
-      project.crop,
+      currentMainCrop,
       project.output.resolutionMode,
-      activeCustomBounds
+      currentMainCustomBounds
     );
   }, [
     mainSrcW,
@@ -934,56 +1133,115 @@ export const VideoPlayer: React.FC = () => {
     showOriginalAspect,
     project.aspect,
     project.fitMode,
-    project.crop,
+    currentMainCrop,
     project.output.resolutionMode,
-    activeCustomBounds,
+    currentMainCustomBounds,
   ]);
 
-  const innerVideoBounds = useMemo(() => {
-    if (showOriginalAspect || isCropEditing || project.fitMode !== 'crop') {
-      return { left: 0, top: 0, width: pixelBounds.width, height: pixelBounds.height };
-    }
-    const crop = project.crop;
-    const hasCrop =
-      crop &&
-      crop.width > 0 &&
-      crop.height > 0 &&
-      (crop.width < 1 || crop.height < 1 || crop.x > 0 || crop.y > 0);
-
-    if (!hasCrop) {
-      return { left: 0, top: 0, width: pixelBounds.width, height: pixelBounds.height };
-    }
-
-    const videoWidth = Math.max(1, Math.round(pixelBounds.width / crop.width));
-    const videoHeight = Math.max(1, Math.round(pixelBounds.height / crop.height));
-    const videoLeft = Math.round(-crop.x * videoWidth);
-    const videoTop = Math.round(-crop.y * videoHeight);
-    return { left: videoLeft, top: videoTop, width: videoWidth, height: videoHeight };
-  }, [showOriginalAspect, isCropEditing, project.fitMode, project.crop, pixelBounds]);
-
-  const cssTransform = useMemo(() => {
-    return buildCssTransform(
-      currentClip?.rotate || 0,
-      currentClip?.flipH || false,
-      currentClip?.flipV || false
+  const renderSlotVisuals = (
+    slot: 'A' | 'B',
+    cfg: SlotActiveConfig | null,
+    layout: { pxBounds: { left: number; top: number; width: number; height: number }; inner: { left: number; top: number; width: number; height: number } },
+    videoRef: React.RefObject<HTMLVideoElement | null>
+  ) => {
+    const filterId = `megu-video-fx-${slot}`;
+    const adj =
+      !cfg || bypassVideoFx
+        ? DEFAULT_VIDEO_ADJUSTMENTS
+        : resolveClipVideoAdjustments(cfg.item.clip);
+    const fxSpec = computePreviewFilterSpec(adj, layout.inner.width, layout.inner.height);
+    const transform = buildCssTransform(
+      cfg?.item.clip.rotate || 0,
+      cfg?.item.clip.flipH || false,
+      cfg?.item.clip.flipV || false
     );
-  }, [currentClip?.rotate, currentClip?.flipH, currentClip?.flipV]);
+    const isVisible = Boolean(cfg);
 
-  const currentClipSharpness = Math.max(0, Math.min(1, currentClip?.sharpness ?? 0));
-  const sharpenKernel = useMemo(() => {
-    if (currentClipSharpness <= 0.001) return null;
-    const k = Number((currentClipSharpness * 0.65).toFixed(4));
-    const center = Number((1 + 4 * k).toFixed(4));
-    return `0 ${-k} 0 ${-k} ${center} ${-k} 0 ${-k} 0`;
-  }, [currentClipSharpness]);
-  const videoFilterCss = sharpenKernel ? 'url(#megu-video-sharpen)' : undefined;
+    return (
+      <div
+        key={`slot-${slot}`}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: cfg ? cfg.zIndex : 1,
+          opacity: isVisible ? 1 : 0,
+          pointerEvents: 'none',
+          overflow: 'hidden',
+          ...(cfg ? cfg.layerStyle : {}),
+        }}
+      >
+        <VideoSvgFilterDefs filterId={filterId} spec={fxSpec} />
+
+        <div
+          className="video-bounds-container"
+          style={{
+            position: 'absolute',
+            left: `${layout.pxBounds.left}px`,
+            top: `${layout.pxBounds.top}px`,
+            width: `${layout.pxBounds.width}px`,
+            height: `${layout.pxBounds.height}px`,
+            overflow: 'hidden',
+            pointerEvents: 'none',
+          }}
+        >
+          <video
+            ref={videoRef}
+            preload="auto"
+            playsInline
+            onLoadedMetadata={(e) => handleVideoLoadedMetadata(slot, e)}
+            onError={(e) => handleVideoError(slot, e)}
+            style={{
+              position: 'absolute',
+              left: `${layout.inner.left}px`,
+              top: `${layout.inner.top}px`,
+              width: `${layout.inner.width}px`,
+              height: `${layout.inner.height}px`,
+              objectFit: 'fill',
+              objectPosition: 'center',
+              transform,
+              filter: fxSpec.hasSvgFilter ? `url(#${filterId})` : undefined,
+              opacity: cfg && !cfg.isImage ? fxSpec.opacityFactor : 0,
+              pointerEvents: 'none',
+            }}
+          />
+
+          {cfg && cfg.isImage && cfg.mediaUrl && (
+            <img
+              src={cfg.mediaUrl}
+              alt={cfg.source?.filename || ''}
+              draggable={false}
+              onError={() => {
+                if (cfg.source) {
+                  void recoverBrokenProxy(cfg.source, previewQuality, cfg.mediaPath);
+                }
+              }}
+              style={{
+                position: 'absolute',
+                left: `${layout.inner.left}px`,
+                top: `${layout.inner.top}px`,
+                width: `${layout.inner.width}px`,
+                height: `${layout.inner.height}px`,
+                objectFit: 'fill',
+                objectPosition: 'center',
+                transform,
+                filter: fxSpec.hasSvgFilter ? `url(#${filterId})` : undefined,
+                opacity: fxSpec.opacityFactor,
+                pointerEvents: 'none',
+              }}
+            />
+          )}
+
+          {cfg && <VideoFrameOverlays spec={fxSpec} />}
+        </div>
+      </div>
+    );
+  };
 
   const isProxyGenerating = currentSource
     ? proxyStatus[proxyStatusKey(currentSource.id, previewQuality)] === 'generating'
     : false;
   const isMainSelected = !!activeClipId && currentClip?.id === activeClipId;
 
-  // Check if the currently selected clip is one of the visible overlay clips
   const activeOverlayEntry = useMemo(
     () => visibleOverlays.find((ov) => ov.clip.id === activeClipId) || null,
     [visibleOverlays, activeClipId]
@@ -1012,7 +1270,6 @@ export const VideoPlayer: React.FC = () => {
     };
   }, [activeOverlayNormBounds, containerW, containerH]);
 
-  // Drag & Drop directly onto Preview Canvas -> adds as Overlay above main track at playhead!
   const handlePreviewDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1087,27 +1344,6 @@ export const VideoPlayer: React.FC = () => {
         }
       }}
     >
-      {/* Hidden SVG GPU Filter for Main Track Preview Sharpening */}
-      {sharpenKernel && (
-        <svg
-          aria-hidden="true"
-          width="0"
-          height="0"
-          style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }}
-        >
-          <defs>
-            <filter id="megu-video-sharpen" colorInterpolationFilters="sRGB">
-              <feConvolveMatrix
-                order="3"
-                kernelMatrix={sharpenKernel}
-                preserveAlpha="true"
-                edgeMode="duplicate"
-              />
-            </filter>
-          </defs>
-        </svg>
-      )}
-
       {/* Proxy Preparation Indicator */}
       {isProxyGenerating && (
         <div
@@ -1179,6 +1415,7 @@ export const VideoPlayer: React.FC = () => {
         className="preview-viewport"
         data-target-w={geometry.targetWidth}
         data-target-h={geometry.targetHeight}
+        data-leader-slot={leaderSlot}
         onClick={(e) => {
           const target = e.target as HTMLElement;
           const isInsideCrop = !!target.closest('.crop-overlay-root');
@@ -1212,92 +1449,24 @@ export const VideoPlayer: React.FC = () => {
             : 'width var(--dur-fast) var(--ease-out), height var(--dur-fast) var(--ease-out)',
         }}
       >
-        {/* Main Track (V1) Video & Still Image Container */}
-        <div
-          className="video-bounds-container"
-          style={{
-            position: 'absolute',
-            left: `${pixelBounds.left}px`,
-            top: `${pixelBounds.top}px`,
-            width: `${pixelBounds.width}px`,
-            height: `${pixelBounds.height}px`,
-            overflow: 'hidden',
-            pointerEvents: 'none',
-            zIndex: 2,
-          }}
-        >
-          {/* Video Element A */}
-          <video
-            ref={videoARef}
-            preload="auto"
-            playsInline
-            onLoadedMetadata={(e) => handleVideoLoadedMetadata('A', e)}
-            onError={(e) => handleVideoError('A', e)}
+        {/* Dual-Layer Main Track Slots (supports seamless 60fps transitions & preloading) */}
+        {renderSlotVisuals('A', slotAConfig, slotALayout, videoARef)}
+        {renderSlotVisuals('B', slotBConfig, slotBLayout, videoBRef)}
+
+        {/* Color Dip Transition Overlay (Fade to Black / White / Custom Color) */}
+        {v1FrameState.dipOverlayColor && v1FrameState.dipOverlayOpacity > 0.001 && (
+          <div
+            data-testid="preview-transition-dip-overlay"
             style={{
               position: 'absolute',
-              left: `${innerVideoBounds.left}px`,
-              top: `${innerVideoBounds.top}px`,
-              width: `${innerVideoBounds.width}px`,
-              height: `${innerVideoBounds.height}px`,
-              objectFit: 'fill',
-              objectPosition: 'center',
-              transform: cssTransform,
-              filter: videoFilterCss,
-              opacity: !isGap && !isCurrentMainImage && activeSlot === 'A' ? 1 : 0,
-              transition: isResizingCrop ? 'none' : 'opacity var(--dur-fast) var(--ease-out)',
+              inset: 0,
+              background: v1FrameState.dipOverlayColor,
+              opacity: v1FrameState.dipOverlayOpacity,
+              zIndex: 4,
               pointerEvents: 'none',
             }}
           />
-
-          {/* Video Element B */}
-          <video
-            ref={videoBRef}
-            preload="auto"
-            playsInline
-            onLoadedMetadata={(e) => handleVideoLoadedMetadata('B', e)}
-            onError={(e) => handleVideoError('B', e)}
-            style={{
-              position: 'absolute',
-              left: `${innerVideoBounds.left}px`,
-              top: `${innerVideoBounds.top}px`,
-              width: `${innerVideoBounds.width}px`,
-              height: `${innerVideoBounds.height}px`,
-              objectFit: 'fill',
-              objectPosition: 'center',
-              transform: cssTransform,
-              filter: videoFilterCss,
-              opacity: !isGap && !isCurrentMainImage && activeSlot === 'B' ? 1 : 0,
-              transition: isResizingCrop ? 'none' : 'opacity var(--dur-fast) var(--ease-out)',
-              pointerEvents: 'none',
-            }}
-          />
-
-          {/* Main Track Still Image (when a photo is placed on V1) */}
-          {!isGap && isCurrentMainImage && currentMediaUrl && (
-            <img
-              src={currentMediaUrl}
-              alt={currentSource?.filename || ''}
-              draggable={false}
-              onError={() => {
-                if (currentSource) {
-                  void recoverBrokenProxy(currentSource, previewQuality, currentMediaPath);
-                }
-              }}
-              style={{
-                position: 'absolute',
-                left: `${innerVideoBounds.left}px`,
-                top: `${innerVideoBounds.top}px`,
-                width: `${innerVideoBounds.width}px`,
-                height: `${innerVideoBounds.height}px`,
-                objectFit: 'fill',
-                objectPosition: 'center',
-                transform: cssTransform,
-                filter: videoFilterCss,
-                pointerEvents: 'none',
-              }}
-            />
-          )}
-        </div>
+        )}
 
         {/* Click-to-select Main Track V1 area */}
         {(!isMainSelected || (project.fitMode === 'crop' && !isCropEditing)) &&
@@ -1323,7 +1492,7 @@ export const VideoPlayer: React.FC = () => {
                 top: `${pixelBounds.top}px`,
                 width: `${pixelBounds.width}px`,
                 height: `${pixelBounds.height}px`,
-                zIndex: 4,
+                zIndex: 5,
                 cursor: 'pointer',
                 pointerEvents: 'auto',
               }}
@@ -1337,6 +1506,8 @@ export const VideoPlayer: React.FC = () => {
             clip={ov.clip}
             source={ov.source}
             localTimeMs={ov.localTimeMs}
+            clipDurationMs={ov.clipDurationMs}
+            timelineOffsetMs={ov.timelineOffsetMs}
             isPlaying={isPlaying}
             isAudioMuted={isAudioMuted}
             masterVolume={volume}
@@ -1344,8 +1515,9 @@ export const VideoPlayer: React.FC = () => {
             previewQuality={previewQuality}
             containerW={containerW}
             containerH={containerH}
-            zIndex={5 + ov.trackIndex}
+            zIndex={6 + ov.trackIndex}
             isSelected={ov.clip.id === activeClipId}
+            bypassVideoFx={bypassVideoFx}
             onSelect={(id) => {
               setCropEditing(false);
               setActiveClipId(id);
@@ -1378,12 +1550,14 @@ export const VideoPlayer: React.FC = () => {
                 normalizedBounds={activeBounds}
                 sourceWidth={mainSrcW}
                 sourceHeight={mainSrcH}
+                clipId={currentClip?.id}
                 onResizeChange={setIsResizingCrop}
                 onBoundsChange={(bounds) => {
+                  if (!currentClip) return;
                   if (project.fitMode === 'fit') {
-                    setFitBounds(bounds);
+                    setFitBounds(bounds, currentClip.id);
                   } else if (project.fitMode === 'stretch') {
-                    setStretchBounds(bounds);
+                    setStretchBounds(bounds, currentClip.id);
                   }
                 }}
               />
@@ -1420,6 +1594,36 @@ export const VideoPlayer: React.FC = () => {
             />
           </div>
         )}
+
+        {/* Before/After Compare Badge when bypassing Video FX */}
+        {bypassVideoFx &&
+          (hasActiveVideoAdjustments(currentClip) ||
+            visibleOverlays.some((ov) => hasActiveVideoAdjustments(ov.clip))) && (
+            <div
+              data-testid="preview-fx-bypass-badge"
+              style={{
+                position: 'absolute',
+                top: '12px',
+                right: '12px',
+                zIndex: 35,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '4px 10px',
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--accent)',
+                borderRadius: 'var(--r-full)',
+                boxShadow: 'var(--shadow-2)',
+                color: 'var(--accent)',
+                fontSize: 'var(--text-11)',
+                fontWeight: 600,
+                pointerEvents: 'none',
+              }}
+            >
+              <CompareSplitIcon size={12} />
+              <span>{t('video_edit.comparing_original')}</span>
+            </div>
+          )}
 
         {/* Drag-to-Overlay Hint on Preview Canvas */}
         {isViewportDragOver && (
